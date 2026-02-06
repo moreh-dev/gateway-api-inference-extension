@@ -19,6 +19,7 @@ package scheduling
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"time"
 
@@ -184,6 +185,11 @@ func (p *SchedulerProfile) runPickerPlugin(ctx context.Context, cycleState *fwks
 	logger.V(logutil.DEBUG).Info("Candidate pods for picking", "endpoints-weighted-score", scoredEndpoints)
 	before := time.Now()
 	result := p.picker.Pick(ctx, cycleState, scoredEndpoints)
+	if len(result.TargetEndpoints) > 1 {
+		result.TargetEndpoints = []fwksched.Endpoint{
+			result.TargetEndpoints[rand.IntN(len(result.TargetEndpoints))],
+		}
+	}
 	metrics.RecordPluginProcessingLatency(pickerExtensionPoint, p.picker.TypedName().Type, p.picker.TypedName().Name, time.Since(before))
 	logger.V(logutil.DEBUG).Info("Completed running picker plugin successfully", "plugin", p.picker.TypedName(), "result", result)
 
