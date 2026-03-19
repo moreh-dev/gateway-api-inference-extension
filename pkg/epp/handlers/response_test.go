@@ -90,6 +90,15 @@ data: [DONE]
 	streamingBodyWithUsageAndCachedTokens = `data: {"id":"cmpl-41764c93-f9d2-4f31-be08-3ba04fa25394","object":"text_completion","created":1740002445,"model":"food-review-0","choices":[],"usage":{"prompt_tokens":7,"total_tokens":17,"completion_tokens":10,"prompt_token_details":{"cached_tokens":5}}}
 data: [DONE]
 	`
+
+	// Responses API SSE format test data
+	responsesStreamingTokenDelta = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n"
+
+	responsesStreamingReasoningDelta = "event: response.reasoning_text.delta\ndata: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"thinking...\"}\n"
+
+	responsesStreamingCompleted = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"object\":\"response\",\"usage\":{\"input_tokens\":10,\"output_tokens\":20,\"total_tokens\":30}}}\n"
+
+	responsesStreamingCompletedNoUsage = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"object\":\"response\"}}\n"
 )
 
 type mockDirector struct{}
@@ -251,7 +260,7 @@ func TestHandleResponseBodyModelStreaming_TokenAccumulation(t *testing.T) {
 		{
 			name: "Standard: Usage and DONE in same chunk",
 			chunks: []string{
-				`data: {"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}` + "\n" + `data: [DONE]`,
+				`data: {"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}` + "\n" + "data: [DONE]\n",
 			},
 			wantUsage: fwkrq.Usage{PromptTokens: 5, CompletionTokens: 10, TotalTokens: 15},
 		},
@@ -261,7 +270,7 @@ func TestHandleResponseBodyModelStreaming_TokenAccumulation(t *testing.T) {
 				// Chunk 1: Usage data arrives
 				`data: {"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}` + "\n",
 				// Chunk 2: Stream termination. Should NOT overwrite the usage from Chunk 1.
-				`data: [DONE]`,
+				"data: [DONE]\n",
 			},
 			wantUsage: fwkrq.Usage{PromptTokens: 5, CompletionTokens: 10, TotalTokens: 15},
 		},
@@ -270,7 +279,7 @@ func TestHandleResponseBodyModelStreaming_TokenAccumulation(t *testing.T) {
 			chunks: []string{
 				`data: {"choices":[{"text":"Hello"}]}` + "\n",
 				`data: {"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}` + "\n",
-				`data: [DONE]`,
+				"data: [DONE]\n",
 			},
 			wantUsage: fwkrq.Usage{PromptTokens: 5, CompletionTokens: 10, TotalTokens: 15},
 		},
@@ -278,9 +287,145 @@ func TestHandleResponseBodyModelStreaming_TokenAccumulation(t *testing.T) {
 			name: "No Usage Data",
 			chunks: []string{
 				`data: {"choices":[{"text":"Hello"}]}` + "\n",
-				`data: [DONE]`,
+				"data: [DONE]\n",
 			},
 			wantUsage: fwkrq.Usage{}, // Zero values
+		},
+		{
+			name: "Responses API: Usage in response.completed event",
+			chunks: []string{
+				responsesStreamingTokenDelta,
+				responsesStreamingTokenDelta,
+				responsesStreamingCompleted,
+			},
+			wantUsage: fwkrq.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30},
+		},
+		{
+			name: "Responses API: Split - tokens then completed in separate chunks",
+			chunks: []string{
+				responsesStreamingTokenDelta,
+				responsesStreamingCompleted,
+			},
+			wantUsage: fwkrq.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30},
+		},
+		{
+			name: "Responses API: No usage in completed event",
+			chunks: []string{
+				responsesStreamingTokenDelta,
+				responsesStreamingCompletedNoUsage,
+			},
+			wantUsage: fwkrq.Usage{}, // Zero values
+		},
+		{
+			name: "Responses API: data line split across gRPC chunks",
+			chunks: []string{
+				responsesStreamingTokenDelta,
+				// response.completed: event line + partial data in one chunk
+				"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"object\":",
+				// continuation of data line in next chunk
+				"\"response\",\"usage\":{\"input_tokens\":10,\"output_tokens\":20,\"total_tokens\":30}}}\n",
+			},
+			wantUsage: fwkrq.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30},
+		},
+		{
+			name: "EndOfStream flush: final chunk has no trailing newline",
+			chunks: []string{
+				responsesStreamingTokenDelta,
+				// Final chunk without trailing \n — buffered as partialSSEData,
+				// flushed by EndOfStream passing "\n" to trigger processing.
+				"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"object\":\"response\",\"usage\":{\"input_tokens\":10,\"output_tokens\":20,\"total_tokens\":30}}}",
+			},
+			wantUsage: fwkrq.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := &StreamingServer{
+				director: &mockDirector{},
+			}
+			reqCtx := &RequestContext{}
+
+			for _, chunk := range tc.chunks {
+				server.HandleResponseBodyModelStreaming(context.Background(), reqCtx, chunk)
+			}
+			// Simulate EndOfStream flush (server.go flushes partialSSEData on EndOfStream).
+			// Pass only "\n" — HandleResponseBodyModelStreaming will prepend
+			// and clear partialSSEData internally, avoiding double-processing.
+			if reqCtx.partialSSEData != "" {
+				server.HandleResponseBodyModelStreaming(context.Background(), reqCtx, "\n")
+			}
+
+			assert.Equal(t, tc.wantUsage, reqCtx.Usage, "Usage data should match expected accumulation")
+			assert.True(t, reqCtx.ResponseComplete, "Response should be marked complete after [DONE]")
+		})
+	}
+}
+
+func TestHandleResponseBodyModelStreaming_TTFTAndITL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		chunks       []string
+		wantTTFTSet  bool
+		wantITLCount int
+	}{
+		{
+			name: "TTFT is set on first token chunk",
+			chunks: []string{
+				`data: {"choices":[{"delta":{"content":"Hello"}}]}` + "\n",
+				`data: {"choices":[{"delta":{"content":" world"}}]}` + "\n",
+			},
+			wantTTFTSet:  true,
+			wantITLCount: 1, // one interval between two tokens
+		},
+		{
+			name: "Usage-only events do not set TTFT",
+			chunks: []string{
+				`data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":10,"total_tokens":15}}` + "\n",
+			},
+			wantTTFTSet:  false,
+			wantITLCount: 0,
+		},
+		{
+			name: "Responses API: TTFT set on output_text.delta",
+			chunks: []string{
+				responsesStreamingTokenDelta,
+				responsesStreamingTokenDelta,
+			},
+			wantTTFTSet:  true,
+			wantITLCount: 1,
+		},
+		{
+			name: "Responses API: reasoning_text.delta also sets TTFT",
+			chunks: []string{
+				responsesStreamingReasoningDelta,
+				responsesStreamingTokenDelta,
+			},
+			wantTTFTSet:  true,
+			wantITLCount: 1,
+		},
+		{
+			name: "Responses API: response.completed does not set TTFT",
+			chunks: []string{
+				responsesStreamingCompleted,
+			},
+			wantTTFTSet:  false,
+			wantITLCount: 0,
+		},
+		{
+			name: "Responses API: event: and data: split across chunks",
+			chunks: []string{
+				// First chunk: event type line only (no corresponding data: line)
+				"event: response.output_text.delta\n",
+				// Second chunk: data: line arrives without preceding event: line
+				"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n",
+				// Third chunk: another token as a single event
+				responsesStreamingTokenDelta,
+			},
+			wantTTFTSet:  true,
+			wantITLCount: 1, // one interval between two tokens
 		},
 	}
 
@@ -295,8 +440,12 @@ func TestHandleResponseBodyModelStreaming_TokenAccumulation(t *testing.T) {
 				server.HandleResponseBodyModelStreaming(context.Background(), reqCtx, chunk)
 			}
 
-			assert.Equal(t, tc.wantUsage, reqCtx.Usage, "Usage data should match expected accumulation")
-			assert.True(t, reqCtx.ResponseComplete, "Response should be marked complete after [DONE]")
+			if tc.wantTTFTSet {
+				assert.False(t, reqCtx.FirstTokenTimestamp.IsZero(), "FirstTokenTimestamp should be set")
+			} else {
+				assert.True(t, reqCtx.FirstTokenTimestamp.IsZero(), "FirstTokenTimestamp should not be set")
+			}
+			assert.Equal(t, tc.wantITLCount, reqCtx.ITLCount, "ITLCount mismatch")
 		})
 	}
 }

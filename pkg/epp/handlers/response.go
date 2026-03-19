@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -36,6 +37,14 @@ import (
 const (
 	streamingRespPrefix = "data: "
 	streamingEndMsg     = "data: [DONE]"
+
+	// SSE event prefix and Responses API event types.
+	// Responses API uses paired "event: <type>\ndata: <json>" lines,
+	// unlike Chat Completions which uses only "data: <json>" lines.
+	sseEventPrefix              = "event: "
+	responsesOutputTextDelta    = "response.output_text.delta"
+	responsesReasoningTextDelta = "response.reasoning_text.delta"
+	responsesCompleted          = "response.completed"
 
 	// OpenAI API object types
 	objectTypeResponse            = "response"
@@ -126,7 +135,87 @@ func (s *StreamingServer) HandleResponseBody(ctx context.Context, reqCtx *Reques
 }
 
 // The function is to handle streaming response if the modelServer is streaming.
+// It supports two SSE formats:
+//   - Chat Completions: "data: {json}\n" lines with "data: [DONE]" termination
+//   - Responses API: paired "event: <type>\ndata: {json}\n" lines with "event: response.completed" termination
 func (s *StreamingServer) HandleResponseBodyModelStreaming(ctx context.Context, reqCtx *RequestContext, responseText string) {
+	// Reassemble partial SSE lines split across gRPC chunk boundaries.
+	// A single SSE data line (e.g., Responses API response.completed containing
+	// the full response object) can exceed one gRPC message size.
+	if reqCtx.partialSSEData != "" {
+		responseText = reqCtx.partialSSEData + responseText
+		reqCtx.partialSSEData = ""
+	}
+	if len(responseText) > 0 && !strings.HasSuffix(responseText, "\n") {
+		lastNL := strings.LastIndex(responseText, "\n")
+		if lastNL >= 0 {
+			reqCtx.partialSSEData = responseText[lastNL+1:]
+			responseText = responseText[:lastNL+1]
+		} else {
+			// Entire chunk is a partial line — buffer all and wait for more.
+			reqCtx.partialSSEData = responseText
+			return
+		}
+	}
+
+	// Process SSE lines individually — a single gRPC chunk can contain multiple SSE events.
+	// Restore pending event type from previous chunk (event: and data: lines may span chunks).
+	currentEventType := reqCtx.pendingSSEEventType
+	reqCtx.pendingSSEEventType = ""
+	for line := range strings.SplitSeq(responseText, "\n") {
+		line = strings.TrimSpace(line)
+
+		// Track Responses API event types (event: lines precede their data: lines).
+		if strings.HasPrefix(line, sseEventPrefix) {
+			currentEventType = strings.TrimPrefix(line, sseEventPrefix)
+			continue
+		}
+
+		if !strings.HasPrefix(line, streamingRespPrefix) || line == streamingEndMsg {
+			continue
+		}
+
+		content := strings.TrimPrefix(line, streamingRespPrefix)
+
+		// Determine if this data line represents a token event.
+		var isToken bool
+		if currentEventType != "" {
+			// Responses API: event type determines token vs non-token.
+			isToken = currentEventType == responsesOutputTextDelta || currentEventType == responsesReasoningTextDelta
+			currentEventType = "" // consumed
+		} else {
+			// Chat Completions: inspect JSON payload for non-empty choices array.
+			// Also handles Responses API fallback via JSON "type" field when
+			// event: and data: lines are split across gRPC chunks.
+			isToken = isTokenEvent(content)
+		}
+
+		if !isToken {
+			continue
+		}
+
+		// Capture per-token timestamp so ITL reflects actual inter-token arrival
+		// timing even when multiple SSE events arrive in a single gRPC chunk.
+		now := time.Now()
+
+		// TTFT: record timestamp of the first token event.
+		if reqCtx.FirstTokenTimestamp.IsZero() {
+			reqCtx.FirstTokenTimestamp = now
+		}
+
+		// ITL (Inter-Token Latency) collection: always measure when possible.
+		if !reqCtx.LastTokenTimestamp.IsZero() {
+			itl := now.Sub(reqCtx.LastTokenTimestamp).Seconds()
+			metrics.RecordRequestITL(ctx, reqCtx.IncomingModelName, reqCtx.TargetModelName, itl)
+			reqCtx.ITLCount++
+			reqCtx.ITLSum += itl
+		}
+		reqCtx.LastTokenTimestamp = now
+	}
+	// Persist unconsumed event type for the next chunk (event: line at end of chunk
+	// with its data: line arriving in the next chunk).
+	reqCtx.pendingSSEEventType = currentEventType
+
 	logger := log.FromContext(ctx)
 	_, err := s.director.HandleResponseBodyStreaming(ctx, reqCtx)
 	if err != nil {
@@ -134,19 +223,21 @@ func (s *StreamingServer) HandleResponseBodyModelStreaming(ctx context.Context, 
 	}
 
 	// Parse usage on EVERY chunk to catch split streams (where usage and [DONE] are in different chunks).
+	// Chat Completions: top-level "usage" field.
 	if resp := parseRespForUsage(ctx, responseText); resp.Usage.TotalTokens > 0 {
 		reqCtx.Usage = resp.Usage
 	}
+	// Responses API: usage nested inside "response.completed" event data.
+	if usage := parseResponsesAPIUsage(ctx, responseText); usage.TotalTokens > 0 {
+		reqCtx.Usage = usage
+	}
 
-	if strings.Contains(responseText, streamingEndMsg) {
+	// Stream completion: Chat Completions uses "data: [DONE]", Responses API uses "event: response.completed".
+	// Token count metrics are recorded in server.go's EndOfStream block, after all chunks
+	// (including buffer flush) have been processed and Usage is finalized.
+	if strings.Contains(responseText, streamingEndMsg) ||
+		strings.Contains(responseText, sseEventPrefix+responsesCompleted) {
 		reqCtx.ResponseComplete = true
-		metrics.RecordInputTokens(reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.Usage.PromptTokens)
-		metrics.RecordOutputTokens(reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.Usage.CompletionTokens)
-		cachedToken := 0
-		if reqCtx.Usage.PromptTokenDetails != nil {
-			cachedToken = reqCtx.Usage.PromptTokenDetails.CachedTokens
-		}
-		metrics.RecordPromptCachedTokens(reqCtx.IncomingModelName, reqCtx.TargetModelName, cachedToken)
 	}
 }
 
@@ -250,6 +341,77 @@ func parseRespForUsage(ctx context.Context, responseText string) ResponseBody {
 	}
 
 	return response
+}
+
+// parseResponsesAPIUsage extracts usage from a Responses API "response.completed" SSE event.
+// The event format is:
+//
+//	event: response.completed
+//	data: {"type":"response.completed","response":{"object":"response","usage":{"input_tokens":10,"output_tokens":20,"total_tokens":30}}}
+func parseResponsesAPIUsage(ctx context.Context, responseText string) fwkrq.Usage {
+	logger := log.FromContext(ctx)
+	var currentEventType string
+
+	for line := range strings.SplitSeq(responseText, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, sseEventPrefix) {
+			currentEventType = strings.TrimPrefix(line, sseEventPrefix)
+			continue
+		}
+		if !strings.HasPrefix(line, streamingRespPrefix) {
+			continue
+		}
+		content := strings.TrimPrefix(line, streamingRespPrefix)
+
+		// Identify response.completed events via either:
+		// 1. Preceding "event: response.completed" line (normal case)
+		// 2. JSON "type" field (handles event: and data: lines split across gRPC chunks)
+		isCompletedEvent := currentEventType == responsesCompleted
+		currentEventType = "" // consumed
+		if !isCompletedEvent && !strings.Contains(content, `"type":"response.completed"`) {
+			continue
+		}
+
+		var event struct {
+			Response struct {
+				Object string         `json:"object"`
+				Usage  map[string]any `json:"usage"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(content), &event); err != nil {
+			logger.Error(err, "unmarshaling Responses API completed event")
+			continue
+		}
+		if event.Response.Usage != nil {
+			objectType := event.Response.Object
+			if objectType == "" {
+				objectType = objectTypeResponse
+			}
+			return extractUsageByAPIType(event.Response.Usage, objectType)
+		}
+	}
+	return fwkrq.Usage{}
+}
+
+// isTokenEvent checks if an SSE data payload contains actual generated token content
+// isTokenEvent checks if an SSE data payload contains actual generated token content.
+// It handles two formats:
+//   - Chat Completions: non-empty choices array
+//   - Responses API fallback: JSON "type" field matching token delta event types
+//     (used when event: and data: lines are split across gRPC chunks)
+func isTokenEvent(jsonPayload string) bool {
+	var event struct {
+		Choices []json.RawMessage `json:"choices"`
+		Type    string            `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(jsonPayload), &event); err != nil {
+		return false
+	}
+	if len(event.Choices) > 0 {
+		return true
+	}
+	// Responses API fallback: detect token events by JSON "type" field
+	return event.Type == responsesOutputTextDelta || event.Type == responsesReasoningTextDelta
 }
 
 type ResponseBody struct {

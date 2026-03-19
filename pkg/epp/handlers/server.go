@@ -92,6 +92,24 @@ type RequestContext struct {
 	RequestRunning            bool
 	Request                   *Request
 
+	// TTFT tracking: set on the first streaming response body chunk
+	FirstTokenTimestamp time.Time
+
+	// ITL tracking fields for streaming responses
+	LastTokenTimestamp time.Time
+	ITLCount          int
+	ITLSum            float64
+
+	// Buffer for partial SSE lines split across gRPC chunks.
+	// A single SSE data line (especially Responses API response.completed)
+	// can be larger than one gRPC message, causing JSON truncation.
+	partialSSEData string
+
+	// Pending SSE event type carried across gRPC chunk boundaries.
+	// When an "event: <type>" line arrives in one chunk but its corresponding
+	// "data: ..." line arrives in the next, this field preserves the event type.
+	pendingSSEEventType string
+
 	SchedulingRequest *schedulingtypes.LLMRequest
 
 	RequestState         StreamRequestState
@@ -295,6 +313,12 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 				responseText := string(v.ResponseBody.Body)
 				s.HandleResponseBodyModelStreaming(ctx, reqCtx, responseText)
 				if v.ResponseBody.EndOfStream {
+					// Flush any partial SSE data buffered across chunk boundaries.
+					// Pass only "\n" — HandleResponseBodyModelStreaming will prepend
+					// and clear partialSSEData internally, avoiding double-processing.
+					if reqCtx.partialSSEData != "" {
+						s.HandleResponseBodyModelStreaming(ctx, reqCtx, "\n")
+					}
 					loggerTrace.Info("stream completed")
 					reqCtx.ResponseComplete = true
 					if _, err := s.director.HandleResponseBodyComplete(ctx, reqCtx); err != nil {
@@ -305,6 +329,33 @@ func (s *StreamingServer) Process(srv extProcPb.ExternalProcessor_ProcessServer)
 					metrics.RecordRequestLatencies(ctx, reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.RequestReceivedTimestamp, reqCtx.ResponseCompleteTimestamp)
 					metrics.RecordResponseSizes(reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.ResponseSize)
 					metrics.RecordNormalizedTimePerOutputToken(ctx, reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.RequestReceivedTimestamp, reqCtx.ResponseCompleteTimestamp, reqCtx.Usage.CompletionTokens)
+					if !reqCtx.FirstTokenTimestamp.IsZero() {
+						ttft := reqCtx.FirstTokenTimestamp.Sub(reqCtx.RequestReceivedTimestamp).Seconds()
+						metrics.RecordRequestTTFT(ctx, reqCtx.IncomingModelName, reqCtx.TargetModelName, ttft)
+						// Prefer explicit usage token count; fall back to observed ITL
+						// count when stream_options.include_usage is not set.
+						effectiveTokens := reqCtx.Usage.CompletionTokens
+						if effectiveTokens <= 1 && reqCtx.ITLCount > 0 {
+							effectiveTokens = reqCtx.ITLCount + 1 // ITLCount measures intervals; N intervals = N+1 tokens
+						}
+						if effectiveTokens > 1 {
+							decodeDuration := reqCtx.ResponseCompleteTimestamp.Sub(reqCtx.FirstTokenTimestamp).Seconds()
+							tpot := decodeDuration / float64(effectiveTokens-1)
+							metrics.RecordRequestTPOT(ctx, reqCtx.IncomingModelName, reqCtx.TargetModelName, tpot)
+						}
+					}
+					if reqCtx.ITLCount > 0 {
+						avgITL := reqCtx.ITLSum / float64(reqCtx.ITLCount)
+						metrics.SetRequestITLGauge(reqCtx.IncomingModelName, reqCtx.TargetModelName, avgITL)
+					}
+					// Record token counts after all chunks (including buffer flush) are processed.
+					metrics.RecordInputTokens(reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.Usage.PromptTokens)
+					metrics.RecordOutputTokens(reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.Usage.CompletionTokens)
+					cachedToken := 0
+					if reqCtx.Usage.PromptTokenDetails != nil {
+						cachedToken = reqCtx.Usage.PromptTokenDetails.CachedTokens
+					}
+					metrics.RecordPromptCachedTokens(reqCtx.IncomingModelName, reqCtx.TargetModelName, cachedToken)
 				}
 
 				reqCtx.respBodyResp = generateResponseBodyResponses(v.ResponseBody.Body, v.ResponseBody.EndOfStream)
