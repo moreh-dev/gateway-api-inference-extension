@@ -240,7 +240,7 @@ func (t *PredictedLatency) ResponseComplete(ctx context.Context, request *schedu
 
 	if predictedLatencyCtx.ttft > 0 {
 		logger.V(logutil.TRACE).Info("Averages calculated", "avgActualTTFT", predictedLatencyCtx.ttft, "avgPredictedTTFT", predictedLatencyCtx.predictedTTFT)
-		metrics.RecordRequestTTFT(ctx, predictedLatencyCtx.incomingModelName, request.TargetModel, predictedLatencyCtx.ttft/1000)
+		// Base TTFT is recorded by the core handler (server.go EndOfStream block).
 		metrics.RecordRequestPredictedTTFT(ctx, predictedLatencyCtx.incomingModelName, request.TargetModel, predictedLatencyCtx.predictedTTFT/1000)
 		if predictedLatencyCtx.ttftSLO > 0 {
 			metrics.RecordRequestTTFTWithSLO(ctx, predictedLatencyCtx.incomingModelName, request.TargetModel, predictedLatencyCtx.ttft, predictedLatencyCtx.ttftSLO)
@@ -249,7 +249,7 @@ func (t *PredictedLatency) ResponseComplete(ctx context.Context, request *schedu
 
 	if predictedLatencyCtx.avgTPOT > 0 {
 		logger.V(logutil.TRACE).Info("Averages calculated", "avgActualTPOT", predictedLatencyCtx.avgTPOT, "avgPredictedTPOT", predictedLatencyCtx.avgPredictedTPOT)
-		metrics.RecordRequestTPOT(ctx, predictedLatencyCtx.incomingModelName, request.TargetModel, predictedLatencyCtx.avgTPOT/1000)
+		// Base TPOT is recorded by the core handler (server.go EndOfStream block).
 		metrics.RecordRequestPredictedTPOT(ctx, predictedLatencyCtx.incomingModelName, request.TargetModel, predictedLatencyCtx.avgPredictedTPOT/1000)
 		if predictedLatencyCtx.avgTPOTSLO > 0 {
 			metrics.RecordRequestTPOTWithSLO(ctx, predictedLatencyCtx.incomingModelName, request.TargetModel, predictedLatencyCtx.avgTPOT, predictedLatencyCtx.avgTPOTSLO)
