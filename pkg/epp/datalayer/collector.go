@@ -74,17 +74,31 @@ type Collector struct {
 	startOnce sync.Once
 	stopOnce  sync.Once
 
+	// poolInfo for reporting endpoint health status
+	poolInfo PoolInfo
+
 	// TODO: optional metrics tracking collection (e.g., errors, invocations, ...)
 }
 
 // NewCollector returns a new collector.
-func NewCollector() *Collector {
-	return &Collector{}
+func NewCollector(poolInfo PoolInfo) *Collector {
+	return &Collector{
+		poolInfo: poolInfo,
+	}
 }
 
 // Start initiates data source collection for the endpoint.
 // TODO: pass PoolInfo for backward compatibility
 func (c *Collector) Start(ctx context.Context, ticker Ticker, ep fwkdl.Endpoint, sources []fwkdl.DataSource) error {
+	if len(sources) == 0 {
+		return errors.New("collector requires at least one data source")
+	}
+	for _, src := range sources {
+		if src == nil {
+			return errors.New("collector data sources must not be nil")
+		}
+	}
+
 	var ready chan struct{}
 	started := false
 
@@ -110,10 +124,16 @@ func (c *Collector) Start(ctx context.Context, ticker Ticker, ep fwkdl.Endpoint,
 					return
 				case <-ticker.Channel():
 					// TODO: do not collect if there's no pool specified?
+					var pollErrs error
 					for _, src := range sources {
 						ctx, cancel := context.WithTimeout(c.ctx, defaultCollectionTimeout)
-						_ = src.Collect(ctx, endpoint) // TODO: track errors per collector?
-						cancel()                       // release the ctx timeout resources
+						err := src.Collect(ctx, endpoint)
+						pollErrs = errors.Join(pollErrs, err)
+						cancel() // release the ctx timeout resources
+					}
+					// Report endpoint health based on collection result
+					if c.poolInfo != nil {
+						c.poolInfo.EndpointSetHealthy(endpoint, pollErrs == nil)
 					}
 				}
 			}
