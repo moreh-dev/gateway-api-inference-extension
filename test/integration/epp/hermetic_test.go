@@ -382,6 +382,25 @@ func TestFullDuplexStreamed_KubeInferenceObjectiveRequest(t *testing.T) {
 					inference_objective_input_tokens_sum{model_name="",target_model_name=""} 7
 					inference_objective_input_tokens_count{model_name="",target_model_name=""} 1
 					`),
+				"inference_objective_output_tokens": cleanMetric(`
+					# HELP inference_objective_output_tokens [ALPHA] Inference objective output token count distribution for requests in each model.
+					# TYPE inference_objective_output_tokens histogram
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="1"} 0
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="8"} 0
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="16"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="32"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="64"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="128"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="256"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="512"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="1024"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="2048"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="4096"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="8192"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="+Inf"} 1
+					inference_objective_output_tokens_sum{model_name="",target_model_name=""} 10
+					inference_objective_output_tokens_count{model_name="",target_model_name=""} 1
+					`),
 			},
 		},
 		{
@@ -428,6 +447,25 @@ func TestFullDuplexStreamed_KubeInferenceObjectiveRequest(t *testing.T) {
 					inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="+Inf"} 1
 					inference_objective_input_tokens_sum{model_name="",target_model_name=""} 10
 					inference_objective_input_tokens_count{model_name="",target_model_name=""} 1
+				`),
+				"inference_objective_output_tokens": cleanMetric(`
+					# HELP inference_objective_output_tokens [ALPHA] Inference objective output token count distribution for requests in each model.
+					# TYPE inference_objective_output_tokens histogram
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="1"} 0
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="8"} 0
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="16"} 0
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="32"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="64"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="128"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="256"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="512"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="1024"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="2048"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="4096"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="8192"} 1
+					inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="+Inf"} 1
+					inference_objective_output_tokens_sum{model_name="",target_model_name=""} 20
+					inference_objective_output_tokens_count{model_name="",target_model_name=""} 1
 				`),
 			},
 		},
