@@ -112,6 +112,16 @@ type RequestContext struct {
 
 	SchedulingRequest *schedulingtypes.LLMRequest
 
+	// ResponseBodyJSON holds the serialized response body bytes for non-streaming responses.
+	// Populated in HandleResponseBody() so that ResponseComplete plugins can access the full response.
+	ResponseBodyJSON []byte
+
+	// CurrentStreamingBody holds the current SSE chunk text for streaming responses.
+	// Populated before calling ResponseStreaming plugins so they can process the raw SSE data.
+	// Note: a single chunk may contain multiple SSE events or partial events split across
+	// gRPC boundaries. Plugins must not assume a complete SSE event per invocation.
+	CurrentStreamingBody string
+
 	RequestState         StreamRequestState
 	modelServerStreaming bool
 

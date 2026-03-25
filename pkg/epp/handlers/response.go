@@ -129,6 +129,10 @@ func (s *StreamingServer) HandleResponseBody(ctx context.Context, reqCtx *Reques
 		reqCtx.Usage = usage
 		logger.V(logutil.VERBOSE).Info("Response generated", "usage", reqCtx.Usage)
 	}
+	reqCtx.ResponseSize = len(responseBytes)
+	// Store the serialized response body so ResponseComplete plugins can access it.
+	reqCtx.ResponseBodyJSON = responseBytes
+	reqCtx.ResponseComplete = true
 
 	return s.director.HandleResponseBodyComplete(ctx, reqCtx)
 }
@@ -216,6 +220,9 @@ func (s *StreamingServer) HandleResponseBodyModelStreaming(ctx context.Context, 
 	// Persist unconsumed event type for the next chunk (event: line at end of chunk
 	// with its data: line arriving in the next chunk).
 	reqCtx.pendingSSEEventType = currentEventType
+
+	// Store the current chunk text so ResponseStreaming plugins can access it.
+	reqCtx.CurrentStreamingBody = responseText
 
 	logger := log.FromContext(ctx)
 	_, err := s.director.HandleResponseBodyStreaming(ctx, reqCtx)

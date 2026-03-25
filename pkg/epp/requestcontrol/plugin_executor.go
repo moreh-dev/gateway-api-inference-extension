@@ -18,7 +18,7 @@ package requestcontrol
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"time"
 
 	fwk "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/interface/requestcontrol"
@@ -31,7 +31,7 @@ import (
 func executePluginsAsDAG(plugins []fwk.PrepareDataPlugin, ctx context.Context, request *schedulingtypes.LLMRequest, endpoints []schedulingtypes.Endpoint) error {
 	for _, plugin := range plugins {
 		if err := plugin.PrepareRequestData(ctx, request, endpoints); err != nil {
-			return errors.New("prepare data plugin " + plugin.TypedName().String() + " failed: " + err.Error())
+			return fmt.Errorf("prepare data plugin %s failed: %w", plugin.TypedName().String(), err)
 		}
 	}
 	return nil
@@ -51,6 +51,6 @@ func prepareDataPluginsWithTimeout(timeout time.Duration, plugins []fwk.PrepareD
 	case err := <-errCh:
 		return err
 	case <-time.After(timeout):
-		return errors.New("prepare data plugin timed out")
+		return fmt.Errorf("prepare data plugin timed out")
 	}
 }
