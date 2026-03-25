@@ -122,6 +122,8 @@ func (s *StreamingServer) HandleResponseBody(ctx context.Context, reqCtx *Reques
 		logger.V(logutil.VERBOSE).Info("Response generated", "usage", reqCtx.Usage)
 	}
 	reqCtx.ResponseSize = len(responseBytes)
+	// Store the serialized response body so ResponseComplete plugins can access it.
+	reqCtx.ResponseBodyJSON = responseBytes
 	// ResponseComplete is to indicate the response is complete. In non-streaming
 	// case, it will be set to be true once the response is processed; in
 	// streaming case, it will be set to be true once the last chunk is processed.
@@ -215,6 +217,9 @@ func (s *StreamingServer) HandleResponseBodyModelStreaming(ctx context.Context, 
 	// Persist unconsumed event type for the next chunk (event: line at end of chunk
 	// with its data: line arriving in the next chunk).
 	reqCtx.pendingSSEEventType = currentEventType
+
+	// Store the current chunk text so ResponseStreaming plugins can access it.
+	reqCtx.CurrentStreamingBody = responseText
 
 	logger := log.FromContext(ctx)
 	_, err := s.director.HandleResponseBodyStreaming(ctx, reqCtx)

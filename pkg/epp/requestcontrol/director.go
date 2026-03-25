@@ -20,6 +20,7 @@ package requestcontrol
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
@@ -156,6 +157,7 @@ func (d *Director) HandleRequest(ctx context.Context, reqCtx *handlers.RequestCo
 		TargetModel: reqCtx.TargetModelName,
 		Body:        requestBody,
 		Headers:     reqCtx.Request.Headers,
+		RawBody:     reqCtx.Request.Body,
 	}
 
 	logger = logger.WithValues("objectiveKey", reqCtx.ObjectiveKey, "incomingModelName", reqCtx.IncomingModelName, "targetModelName", reqCtx.TargetModelName, "priority", infObjective.Spec.Priority)
@@ -177,9 +179,14 @@ func (d *Director) HandleRequest(ctx context.Context, reqCtx *handlers.RequestCo
 	snapshotOfCandidatePods := d.toSchedulerPodMetrics(candidatePods)
 
 	// Prepare per request data by running PrepareData plugins.
-	if d.runPrepareDataPlugins(ctx, reqCtx.SchedulingRequest, snapshotOfCandidatePods) != nil {
-		// Don't fail the request if PrepareData plugins fail.
-		logger.V(logutil.DEFAULT).Error(err, "failed to prepare per request data")
+	if prepareErr := d.runPrepareDataPlugins(ctx, reqCtx.SchedulingRequest, snapshotOfCandidatePods); prepareErr != nil {
+		// If the plugin returns a typed error (e.g., BadRequest), propagate it to fail the request.
+		var typedErr errutil.Error
+		if errors.As(prepareErr, &typedErr) {
+			return reqCtx, typedErr
+		}
+		// For other errors (e.g., timeout), log and continue.
+		logger.V(logutil.DEFAULT).Error(prepareErr, "failed to prepare per request data")
 	}
 
 	// Run admit request plugins
@@ -300,6 +307,8 @@ func (d *Director) HandleResponseBodyStreaming(ctx context.Context, reqCtx *hand
 	response := &fwk.Response{
 		RequestId:   reqCtx.Request.Headers[requtil.RequestIdHeaderKey],
 		Headers:     reqCtx.Response.Headers,
+		Body:        reqCtx.CurrentStreamingBody,
+		IsStreaming: true,
 		EndOfStream: reqCtx.ResponseComplete,
 	}
 
@@ -315,6 +324,7 @@ func (d *Director) HandleResponseBodyComplete(ctx context.Context, reqCtx *handl
 	response := &fwk.Response{
 		RequestId:       reqCtx.Request.Headers[requtil.RequestIdHeaderKey],
 		Headers:         reqCtx.Response.Headers,
+		Body:            string(reqCtx.ResponseBodyJSON),
 		DynamicMetadata: reqCtx.Response.DynamicMetadata,
 		Usage:           reqCtx.Usage,
 	}

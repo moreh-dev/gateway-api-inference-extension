@@ -39,6 +39,11 @@ type LLMRequest struct {
 	Body *LLMRequestBody
 	// Headers is a map of the request headers.
 	Headers map[string]string
+	// RawBody is a reference to the original request body map (reqCtx.Request.Body).
+	// Plugins can modify this map to change the body sent to the backend.
+	// TODO(MAF-19473): upstream rebase 후 삭제. upstream에서는 LLMRequestBody.ParsedBody로 대체됨.
+	// rebase 기준: upstream 00edceff (#2359, Pluggable Parser Framework, 2026-03-04)
+	RawBody map[string]any
 }
 
 func (r *LLMRequest) String() string {
@@ -138,6 +143,9 @@ type ResponsesRequest struct {
 	Instructions interface{} `json:"instructions,omitempty"`
 	// Tools field for function calling capabilities
 	Tools interface{} `json:"tools,omitempty"`
+	// Store indicates whether the response should be stored for multi-turn chaining.
+	// Parsed from the original request; plugins should read this instead of RawBody["store"].
+	Store *bool `json:"store,omitempty"`
 	// CacheSalt isolates prefix caches for security
 	CacheSalt string `json:"cache_salt,omitempty"`
 }

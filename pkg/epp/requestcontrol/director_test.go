@@ -136,6 +136,21 @@ func newMockPrepareDataPlugin(name string) *mockPrepareDataPlugin {
 	}
 }
 
+// mockErrorPrepareDataPlugin is a PrepareDataPlugin that returns an errutil.Error.
+type mockErrorPrepareDataPlugin struct {
+	name string
+	err  error
+}
+
+func (m *mockErrorPrepareDataPlugin) TypedName() fwkplugin.TypedName {
+	return fwkplugin.TypedName{Name: m.name, Type: "mock-error"}
+}
+func (m *mockErrorPrepareDataPlugin) Produces() map[string]any { return map[string]any{} }
+func (m *mockErrorPrepareDataPlugin) Consumes() map[string]any { return map[string]any{} }
+func (m *mockErrorPrepareDataPlugin) PrepareRequestData(ctx context.Context, request *fwksched.LLMRequest, endpoints []fwksched.Endpoint) error {
+	return m.err
+}
+
 type mockAdmissionPlugin struct {
 	typedName   fwkplugin.TypedName
 	denialError error
@@ -304,7 +319,7 @@ func TestDirector_HandleRequest(t *testing.T) {
 		wantMutatedBodyModel    string                   // Expected model in reqCtx.Request.Body after PostDispatch
 		targetModelName         string                   // Expected model name after target model resolution
 		admitRequestDenialError error                    // Expected denial error from admission plugin
-		prepareDataPlugin       *mockPrepareDataPlugin
+		prepareDataPlugin       fwk.PrepareDataPlugin
 	}{
 		{
 			name: "successful completions request",
@@ -598,6 +613,23 @@ func TestDirector_HandleRequest(t *testing.T) {
 				m.scheduleErr = nil
 			},
 			wantErrCode:            errutil.Internal,
+			inferenceObjectiveName: objectiveName,
+		},
+		{
+			name: "PrepareData plugin returns typed error propagates to caller",
+			reqBodyMap: map[string]any{
+				"model":  model,
+				"prompt": "test prompt",
+			},
+			mockAdmissionController: &mockAdmissionController{admitErr: nil},
+			schedulerMockSetup: func(m *mockScheduler) {
+				m.scheduleResults = defaultSuccessfulScheduleResults
+			},
+			prepareDataPlugin: &mockErrorPrepareDataPlugin{
+				name: "error-plugin",
+				err:  errutil.Error{Code: errutil.BadRequest, Msg: "Response with id 'resp_xxx' not found."},
+			},
+			wantErrCode:            errutil.BadRequest,
 			inferenceObjectiveName: objectiveName,
 		},
 	}
