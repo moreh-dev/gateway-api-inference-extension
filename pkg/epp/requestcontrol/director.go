@@ -21,6 +21,7 @@ package requestcontrol
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
@@ -128,7 +129,7 @@ func (d *Director) HandleRequest(ctx context.Context, reqCtx *handlers.RequestCo
 	logger := log.FromContext(ctx)
 
 	// Parse, mutate, and extract the request body
-	llmRequestBody, err := d.processRequestBody(ctx, reqCtx)
+	llmRequestBody, rawBodyMap, err := d.processRequestBody(ctx, reqCtx)
 	if err != nil {
 		return reqCtx, err
 	}
@@ -142,6 +143,7 @@ func (d *Director) HandleRequest(ctx context.Context, reqCtx *handlers.RequestCo
 		Body:        llmRequestBody,
 		Headers:     reqCtx.Request.Headers,
 		Objectives:  requestObjectives,
+		RawBody:     rawBodyMap,
 	}
 
 	logger = logger.WithValues("objectiveKey", reqCtx.ObjectiveKey, "incomingModelName", reqCtx.IncomingModelName, "targetModelName", reqCtx.TargetModelName, "priority", infObjective.Spec.Priority)
@@ -162,9 +164,23 @@ func (d *Director) HandleRequest(ctx context.Context, reqCtx *handlers.RequestCo
 	snapshotOfCandidatePods := d.toSchedulerPodMetrics(candidatePods)
 
 	// Prepare per request data by running PrepareData plugins.
-	if d.runPrepareDataPlugins(ctx, reqCtx.SchedulingRequest, snapshotOfCandidatePods) != nil {
-		// Don't fail the request if PrepareData plugins fail.
-		logger.V(logutil.DEFAULT).Error(err, "failed to prepare per request data")
+	if prepareErr := d.runPrepareDataPlugins(ctx, reqCtx.SchedulingRequest, snapshotOfCandidatePods); prepareErr != nil {
+		// If the plugin returns a typed error (e.g., BadRequest), propagate it to fail the request.
+		var typedErr errutil.Error
+		if errors.As(prepareErr, &typedErr) {
+			return reqCtx, typedErr
+		}
+		// For other errors (e.g., timeout), log and continue.
+		logger.V(logutil.DEFAULT).Error(prepareErr, "failed to prepare per request data")
+	}
+
+	// Re-serialize RawBody after PrepareData plugins may have modified it
+	// (e.g., responses-store plugin expands input, removes previous_response_id).
+	if reqCtx.SchedulingRequest.RawBody != nil {
+		if updatedBody, err := json.Marshal(reqCtx.SchedulingRequest.RawBody); err == nil {
+			reqCtx.Request.RawBody = updatedBody
+			reqCtx.RequestSize = len(updatedBody)
+		}
 	}
 
 	// Run admit request plugins
@@ -189,21 +205,21 @@ func (d *Director) HandleRequest(ctx context.Context, reqCtx *handlers.RequestCo
 	return reqCtx, nil
 }
 
-func (d *Director) processRequestBody(ctx context.Context, reqCtx *handlers.RequestContext) (*fwksched.LLMRequestBody, error) {
+func (d *Director) processRequestBody(ctx context.Context, reqCtx *handlers.RequestContext) (*fwksched.LLMRequestBody, map[string]any, error) {
 	bodyMap := make(map[string]any)
 	if err := json.Unmarshal(reqCtx.Request.RawBody, &bodyMap); err != nil {
-		return nil, errutil.Error{Code: errutil.BadRequest, Msg: "Error unmarshaling request body"}
+		return nil, nil, errutil.Error{Code: errutil.BadRequest, Msg: "Error unmarshaling request body"}
 	}
 
 	if err := d.mutateAndRepackage(ctx, reqCtx, bodyMap); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	extractedBody, err := requtil.ExtractRequestBody(bodyMap, reqCtx.Request.Headers)
 	if err != nil {
-		return nil, errutil.Error{Code: errutil.BadRequest, Msg: fmt.Errorf("failed to extract request data: %w", err).Error()}
+		return nil, nil, errutil.Error{Code: errutil.BadRequest, Msg: fmt.Errorf("failed to extract request data: %w", err).Error()}
 	}
-	return extractedBody, nil
+	return extractedBody, bodyMap, nil
 }
 
 func (d *Director) mutateAndRepackage(ctx context.Context, reqCtx *handlers.RequestContext, bodyMap map[string]any) error {
@@ -341,6 +357,8 @@ func (d *Director) HandleResponseBodyStreaming(ctx context.Context, reqCtx *hand
 	response := &fwk.Response{
 		RequestId:   reqCtx.Request.Headers[reqcommon.RequestIdHeaderKey],
 		Headers:     reqCtx.Response.Headers,
+		Body:        reqCtx.CurrentStreamingBody,
+		IsStreaming: true,
 		EndOfStream: reqCtx.ResponseComplete,
 	}
 
@@ -356,6 +374,7 @@ func (d *Director) HandleResponseBodyComplete(ctx context.Context, reqCtx *handl
 	response := &fwk.Response{
 		RequestId:       reqCtx.Request.Headers[reqcommon.RequestIdHeaderKey],
 		Headers:         reqCtx.Response.Headers,
+		Body:            string(reqCtx.ResponseBodyJSON),
 		DynamicMetadata: reqCtx.Response.DynamicMetadata,
 		Usage:           reqCtx.Usage,
 	}
@@ -442,3 +461,4 @@ func (d *Director) runResponseCompletePlugins(ctx context.Context, request *fwks
 		loggerDebug.Info("Completed running ResponseComplete plugin successfully", "plugin", plugin.TypedName())
 	}
 }
+
