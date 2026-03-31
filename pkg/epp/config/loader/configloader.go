@@ -34,6 +34,7 @@ import (
 	fwkplugin "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/interface/plugin"
 	framework "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/interface/scheduling"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/scheduling/profile"
+	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/saturationdetector/framework/plugins/runningrequestsdetector"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/saturationdetector/framework/plugins/utilizationdetector"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/scheduling"
 )
@@ -114,10 +115,12 @@ func InstantiateAndConfigure(
 	}
 
 	return &config.Config{
-		SchedulerConfig:          schedulerConfig,
-		SaturationDetectorConfig: buildSaturationConfig(rawConfig.SaturationDetector),
-		DataConfig:               dataConfig,
-		FlowControlConfig:        flowControlConfig,
+		SchedulerConfig:               schedulerConfig,
+		SaturationDetectorType:        buildSaturationDetectorType(rawConfig.SaturationDetector),
+		SaturationDetectorConfig:      buildSaturationConfig(rawConfig.SaturationDetector),
+		RunningRequestsDetectorConfig: buildRunningRequestsDetectorConfig(rawConfig.SaturationDetector),
+		DataConfig:                    dataConfig,
+		FlowControlConfig:             flowControlConfig,
 	}, nil
 }
 
@@ -242,6 +245,40 @@ func buildSaturationConfig(apiConfig *configapi.SaturationDetector) *utilization
 		}
 	}
 
+	return cfg
+}
+
+const (
+	SaturationDetectorTypeUtilization     = "utilization"
+	SaturationDetectorTypeRunningRequests = "running-requests"
+)
+
+func buildSaturationDetectorType(apiConfig *configapi.SaturationDetector) string {
+	if apiConfig == nil {
+		return SaturationDetectorTypeUtilization
+	}
+
+	switch apiConfig.Type {
+	case SaturationDetectorTypeUtilization, SaturationDetectorTypeRunningRequests:
+		return apiConfig.Type
+	default:
+		return SaturationDetectorTypeUtilization
+	}
+}
+
+func buildRunningRequestsDetectorConfig(apiConfig *configapi.SaturationDetector) *runningrequestsdetector.Config {
+	cfg := &runningrequestsdetector.Config{
+		MaxConcurrencyPerPod: runningrequestsdetector.DefaultMaxConcurrencyPerPod,
+		CacheTTL:             runningrequestsdetector.DefaultCacheTTL,
+	}
+	if apiConfig != nil {
+		if apiConfig.MaxConcurrencyPerPod > 0 {
+			cfg.MaxConcurrencyPerPod = apiConfig.MaxConcurrencyPerPod
+		}
+		if apiConfig.CacheTTL.Duration > 0 {
+			cfg.CacheTTL = apiConfig.CacheTTL.Duration
+		}
+	}
 	return cfg
 }
 

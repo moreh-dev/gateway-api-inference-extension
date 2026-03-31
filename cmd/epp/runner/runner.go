@@ -71,7 +71,9 @@ import (
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/metrics/collectors"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/requestcontrol"
 	testresponsereceived "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/requestcontrol/plugins/test/responsereceived"
+	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/saturationdetector/framework/plugins/runningrequestsdetector"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/saturationdetector/framework/plugins/utilizationdetector"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/scheduling"
 	runserver "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/server"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/util/env"
@@ -273,8 +275,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		setupLog.Error(err, "failed to initialize data layer")
 		return err
 	}
-
-	saturationDetector := utilizationdetector.NewDetector(eppConfig.SaturationDetectorConfig, setupLog)
+	var saturationDetector contracts.SaturationDetector
+	switch eppConfig.SaturationDetectorType {
+	case loader.SaturationDetectorTypeRunningRequests:
+		detector := runningrequestsdetector.NewDetector(eppConfig.RunningRequestsDetectorConfig, ctrlmetrics.Registry, setupLog)
+		saturationDetector = runningrequestsdetector.NewCachedDetector(detector, eppConfig.RunningRequestsDetectorConfig.CacheTTL, setupLog)
+	default:
+		saturationDetector = utilizationdetector.NewDetector(eppConfig.SaturationDetectorConfig, setupLog)
+	}
+	setupLog.Info("SaturationDetector initialized", "type", eppConfig.SaturationDetectorType)
 
 	// --- Admission Control Initialization ---
 	var admissionController requestcontrol.AdmissionController

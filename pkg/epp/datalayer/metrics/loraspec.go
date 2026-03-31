@@ -35,6 +35,9 @@ func parseStringToLoRASpec(spec string) (*LoRASpec, error) {
 	if err != nil {
 		return nil, err
 	}
+	if baseSpec == nil {
+		return nil, nil
+	}
 	return &LoRASpec{
 		Spec: baseSpec,
 	}, nil

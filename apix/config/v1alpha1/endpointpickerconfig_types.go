@@ -166,6 +166,13 @@ func (fg FeatureGates) String() string {
 // SaturationDetector
 type SaturationDetector struct {
 	// +optional
+	// Type selects the saturation detector implementation.
+	// Supported values: "utilization" (default), "running-requests".
+	Type string `json:"type,omitempty"`
+
+	// --- Utilization Detector (default) ---
+
+	// +optional
 	// QueueDepthThreshold defines the backend waiting queue size above which a
 	// pod is considered to have insufficient capacity for new requests.
 	QueueDepthThreshold int `json:"queueDepthThreshold,omitempty"`
@@ -181,12 +188,29 @@ type SaturationDetector struct {
 	// "good capacity" considerations or treated as having no capacity for
 	// safety.
 	MetricsStalenessThreshold metav1.Duration `json:"metricsStalenessThreshold,omitempty"`
+
+	// --- RunningRequests Detector ---
+
+	// +optional
+	// MaxConcurrencyPerPod is the ideal request capacity per pod for the running-requests detector.
+	MaxConcurrencyPerPod int64 `json:"maxConcurrencyPerPod,omitempty"`
+
+	// +optional
+	// CacheTTL is how long the running-requests detector caches the computed saturation value
+	// to avoid gathering the full Prometheus registry on every request.
+	CacheTTL metav1.Duration `json:"cacheTTL,omitempty"`
 }
 
 func (sd *SaturationDetector) String() string {
 	result := ""
 	if sd != nil {
+		if sd.Type != "" {
+			result += fmt.Sprintf("Type: %s", sd.Type)
+		}
 		if sd.QueueDepthThreshold != 0 {
+			if len(result) != 0 {
+				result += ", "
+			}
 			result += fmt.Sprintf("QueueDepthThreshold: %d", sd.QueueDepthThreshold)
 		}
 		if sd.KVCacheUtilThreshold != 0.0 {
@@ -200,6 +224,18 @@ func (sd *SaturationDetector) String() string {
 				result += ", "
 			}
 			result += fmt.Sprintf("MetricsStalenessThreshold: %s", sd.MetricsStalenessThreshold)
+		}
+		if sd.MaxConcurrencyPerPod != 0 {
+			if len(result) != 0 {
+				result += ", "
+			}
+			result += fmt.Sprintf("MaxConcurrencyPerPod: %d", sd.MaxConcurrencyPerPod)
+		}
+		if sd.CacheTTL.Duration != 0 {
+			if len(result) != 0 {
+				result += ", "
+			}
+			result += fmt.Sprintf("CacheTTL: %s", sd.CacheTTL)
 		}
 	}
 	return "{" + result + "}"
