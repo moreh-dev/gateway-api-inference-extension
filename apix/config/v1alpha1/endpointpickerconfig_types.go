@@ -189,6 +189,13 @@ func (fg FeatureGates) String() string {
 // SaturationDetector
 type SaturationDetector struct {
 	// +optional
+	// Type selects the saturation detector implementation.
+	// Supported values: "utilization" (default), "running-requests".
+	Type string `json:"type,omitempty"`
+
+	// --- Utilization Detector (default) ---
+
+	// +optional
 	// QueueDepthThreshold defines the backend waiting queue size above which a
 	// pod is considered to have insufficient capacity for new requests.
 	QueueDepthThreshold int `json:"queueDepthThreshold,omitempty"`
@@ -204,6 +211,17 @@ type SaturationDetector struct {
 	// "good capacity" considerations or treated as having no capacity for
 	// safety.
 	MetricsStalenessThreshold metav1.Duration `json:"metricsStalenessThreshold,omitempty"`
+
+	// --- RunningRequests Detector ---
+
+	// +optional
+	// MaxConcurrencyPerPod is the ideal request capacity per pod for the running-requests detector.
+	MaxConcurrencyPerPod int64 `json:"maxConcurrencyPerPod,omitempty"`
+
+	// +optional
+	// CacheTTL is how long the running-requests detector caches the computed saturation value
+	// to avoid gathering the full Prometheus registry on every request.
+	CacheTTL metav1.Duration `json:"cacheTTL,omitempty"`
 }
 
 func (sd *SaturationDetector) String() string {
@@ -211,6 +229,9 @@ func (sd *SaturationDetector) String() string {
 		return nilString
 	}
 	var parts []string
+	if sd.Type != "" {
+		parts = append(parts, fmt.Sprintf("Type: %s", sd.Type))
+	}
 	if sd.QueueDepthThreshold != 0 {
 		parts = append(parts, fmt.Sprintf("QueueDepthThreshold: %d", sd.QueueDepthThreshold))
 	}
@@ -219,6 +240,12 @@ func (sd *SaturationDetector) String() string {
 	}
 	if sd.MetricsStalenessThreshold.Duration != 0 {
 		parts = append(parts, fmt.Sprintf("MetricsStalenessThreshold: %s", sd.MetricsStalenessThreshold.Duration))
+	}
+	if sd.MaxConcurrencyPerPod != 0 {
+		parts = append(parts, fmt.Sprintf("MaxConcurrencyPerPod: %d", sd.MaxConcurrencyPerPod))
+	}
+	if sd.CacheTTL.Duration != 0 {
+		parts = append(parts, fmt.Sprintf("CacheTTL: %s", sd.CacheTTL.Duration))
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
 }
