@@ -19,14 +19,17 @@ package config
 import (
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/datalayer"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/flowcontrol"
+	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/saturationdetector/framework/plugins/runningrequestsdetector"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/saturationdetector/framework/plugins/utilizationdetector"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/scheduling"
 )
 
 // Config is the configuration loaded from the text based configuration
 type Config struct {
-	SchedulerConfig          *scheduling.SchedulerConfig
-	SaturationDetectorConfig *utilizationdetector.Config
-	DataConfig               *datalayer.Config
-	FlowControlConfig        *flowcontrol.Config
+	SchedulerConfig               *scheduling.SchedulerConfig
+	SaturationDetectorType        string // "utilization" (default), "running-requests"
+	SaturationDetectorConfig      *utilizationdetector.Config
+	RunningRequestsDetectorConfig *runningrequestsdetector.Config
+	DataConfig                    *datalayer.Config
+	FlowControlConfig             *flowcontrol.Config
 }

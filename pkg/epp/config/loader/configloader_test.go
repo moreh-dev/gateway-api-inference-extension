@@ -45,6 +45,7 @@ import (
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/scheduling/profile"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/scheduling/scorer"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/scheduling/scorer/prefix"
+	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/saturationdetector/framework/plugins/runningrequestsdetector"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/saturationdetector/framework/plugins/utilizationdetector"
 	"sigs.k8s.io/gateway-api-inference-extension/test/utils"
 )
@@ -533,6 +534,132 @@ func TestBuildSaturationConfig(t *testing.T) {
 			got := buildSaturationConfig(tc.input)
 			if diff := cmp.Diff(tc.expected, got); diff != "" {
 				t.Errorf("buildSaturationConfig mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestBuildSaturationDetectorType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    *configapi.SaturationDetector
+		expected string
+	}{
+		{
+			name:     "Nil Input (Default)",
+			input:    nil,
+			expected: SaturationDetectorTypeUtilization,
+		},
+		{
+			name:     "Empty Type (Default)",
+			input:    &configapi.SaturationDetector{Type: ""},
+			expected: SaturationDetectorTypeUtilization,
+		},
+		{
+			name:     "Utilization Type",
+			input:    &configapi.SaturationDetector{Type: "utilization"},
+			expected: SaturationDetectorTypeUtilization,
+		},
+		{
+			name:     "Running-Requests Type",
+			input:    &configapi.SaturationDetector{Type: "running-requests"},
+			expected: SaturationDetectorTypeRunningRequests,
+		},
+		{
+			name:     "Unknown Type (Fallback to Default)",
+			input:    &configapi.SaturationDetector{Type: "unknown-type"},
+			expected: SaturationDetectorTypeUtilization,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := buildSaturationDetectorType(tc.input)
+			require.Equal(t, tc.expected, got)
+		})
+	}
+}
+
+func TestBuildRunningRequestsDetectorConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    *configapi.SaturationDetector
+		expected *runningrequestsdetector.Config
+	}{
+		{
+			name:  "Nil Input (Default)",
+			input: nil,
+			expected: &runningrequestsdetector.Config{
+				MaxConcurrencyPerPod: runningrequestsdetector.DefaultMaxConcurrencyPerPod,
+				CacheTTL:             runningrequestsdetector.DefaultCacheTTL,
+			},
+		},
+		{
+			name:  "Zero MaxConcurrency (Default)",
+			input: &configapi.SaturationDetector{MaxConcurrencyPerPod: 0},
+			expected: &runningrequestsdetector.Config{
+				MaxConcurrencyPerPod: runningrequestsdetector.DefaultMaxConcurrencyPerPod,
+				CacheTTL:             runningrequestsdetector.DefaultCacheTTL,
+			},
+		},
+		{
+			name:  "Negative MaxConcurrency (Default)",
+			input: &configapi.SaturationDetector{MaxConcurrencyPerPod: -5},
+			expected: &runningrequestsdetector.Config{
+				MaxConcurrencyPerPod: runningrequestsdetector.DefaultMaxConcurrencyPerPod,
+				CacheTTL:             runningrequestsdetector.DefaultCacheTTL,
+			},
+		},
+		{
+			name:  "Valid MaxConcurrency",
+			input: &configapi.SaturationDetector{MaxConcurrencyPerPod: 10},
+			expected: &runningrequestsdetector.Config{
+				MaxConcurrencyPerPod: 10,
+				CacheTTL:             runningrequestsdetector.DefaultCacheTTL,
+			},
+		},
+		{
+			name: "Valid CacheTTL",
+			input: &configapi.SaturationDetector{
+				MaxConcurrencyPerPod: 10,
+				CacheTTL:             metav1.Duration{Duration: 200 * time.Millisecond},
+			},
+			expected: &runningrequestsdetector.Config{
+				MaxConcurrencyPerPod: 10,
+				CacheTTL:             200 * time.Millisecond,
+			},
+		},
+		{
+			name:  "Zero CacheTTL (Default)",
+			input: &configapi.SaturationDetector{},
+			expected: &runningrequestsdetector.Config{
+				MaxConcurrencyPerPod: runningrequestsdetector.DefaultMaxConcurrencyPerPod,
+				CacheTTL:             runningrequestsdetector.DefaultCacheTTL,
+			},
+		},
+		{
+			name: "Negative CacheTTL (Default)",
+			input: &configapi.SaturationDetector{
+				CacheTTL: metav1.Duration{Duration: -1 * time.Second},
+			},
+			expected: &runningrequestsdetector.Config{
+				MaxConcurrencyPerPod: runningrequestsdetector.DefaultMaxConcurrencyPerPod,
+				CacheTTL:             runningrequestsdetector.DefaultCacheTTL,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := buildRunningRequestsDetectorConfig(tc.input)
+			if diff := cmp.Diff(tc.expected, got); diff != "" {
+				t.Errorf("buildRunningRequestsDetectorConfig mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
