@@ -239,13 +239,15 @@ func (s *StreamingServer) HandleResponseBodyModelStreaming(ctx context.Context, 
 		reqCtx.Usage = usage
 	}
 
-	// Stream completion: Chat Completions uses "data: [DONE]", Responses API uses "event: response.completed".
-	// Token count metrics are recorded in server.go's EndOfStream block, after all chunks
-	// (including buffer flush) have been processed and Usage is finalized.
-	if strings.Contains(responseText, streamingEndMsg) ||
-		strings.Contains(responseText, sseEventPrefix+responsesCompleted) {
-		reqCtx.ResponseComplete = true
-	}
+	// Stream completion detection: Chat Completions uses "data: [DONE]",
+	// Responses API uses "event: response.completed".
+	// NOTE: We intentionally do NOT set reqCtx.ResponseComplete here.
+	// ResponseComplete controls the ext_proc state machine in updateStateAndSendIfNeeded
+	// (server.go) — setting it before Envoy's EndOfStream arrives causes the state to
+	// advance to BodyResponseResponsesComplete prematurely, preventing the final
+	// EndOfStream response from being sent back to Envoy. This leaves the client
+	// connection hanging because Envoy never receives the close signal.
+	// ResponseComplete is correctly set from v.ResponseBody.EndOfStream in server.go.
 }
 
 func (s *StreamingServer) HandleResponseHeaders(ctx context.Context, reqCtx *RequestContext, resp *extProcPb.ProcessingRequest_ResponseHeaders) (*RequestContext, error) {

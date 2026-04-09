@@ -351,7 +351,11 @@ func TestHandleResponseBodyModelStreaming_TokenAccumulation(t *testing.T) {
 			}
 
 			assert.Equal(t, tc.wantUsage, reqCtx.Usage, "Usage data should match expected accumulation")
-			assert.True(t, reqCtx.ResponseComplete, "Response should be marked complete after [DONE]")
+			// ResponseComplete is NOT set by HandleResponseBodyModelStreaming.
+			// It is controlled by Envoy's EndOfStream flag in server.go.
+			// Setting it here would cause the ext_proc state machine to advance
+			// prematurely, preventing the final EndOfStream response from reaching Envoy.
+			assert.False(t, reqCtx.ResponseComplete, "ResponseComplete must not be set by [DONE] detection")
 		})
 	}
 }
