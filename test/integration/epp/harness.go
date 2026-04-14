@@ -466,7 +466,7 @@ func (h *TestHarness) ExpectMetrics(expected map[string]string) {
 		assert.Eventually(h.t, func() bool {
 			err = metricsutils.GatherAndCompare(crmetrics.Registry, strings.NewReader(value), name)
 			return err == nil
-		}, 2*time.Second, 50*time.Millisecond, "Timed out waiting for metric %s to match: %v", name)
+		}, 2*time.Second, 50*time.Millisecond, "Timed out waiting for metric %s to match", name)
 		if err != nil {
 			h.t.Errorf("Metric mismatch for %s: %v", name, err)
 		}
