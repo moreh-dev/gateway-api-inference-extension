@@ -286,6 +286,13 @@ func processTokenForLatencyPrediction(
 	latencyMs := float64(now.Sub(predictedLatencyCtx.lastTokenTimestamp).Milliseconds())
 	predictedLatencyCtx.generatedTokenCount++
 
+	// Moreh 5701fa97: record per-token ITL metric (Histogram) and accumulate for per-request
+	// average gauge reported at EOS.
+	itlSeconds := latencyMs / 1000
+	metrics.RecordRequestITL(ctx, predictedLatencyCtx.incomingModelName, predictedLatencyCtx.schedulingRequest.TargetModel, itlSeconds)
+	predictedLatencyCtx.itlCount++
+	predictedLatencyCtx.itlSum += itlSeconds
+
 	// record sampled TPOT observations (avgTPOT is computed in ResponseComplete from e2e latency)
 	if predictedLatencyCtx.generatedTokenCount == 2 || predictedLatencyCtx.tokenSampler.shouldPredict(predictedLatencyCtx.generatedTokenCount) {
 		predictedLatencyCtx.tpotObservations = append(predictedLatencyCtx.tpotObservations, latencyMs)
