@@ -64,6 +64,7 @@ import (
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/flowcontrol/fairness"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/flowcontrol/ordering"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/flowcontrol/saturationdetector/concurrency"
+	sdrunningrequests "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/flowcontrol/saturationdetector/runningrequests"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/flowcontrol/saturationdetector/utilization"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/flowcontrol/usagelimits"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/requestcontrol/admitter/latencyslo"
@@ -495,6 +496,7 @@ func (r *Runner) registerInTreePlugins() {
 	// register saturation detector plugins
 	fwkplugin.Register(concurrency.ConcurrencyDetectorType, concurrency.ConcurrencyDetectorFactory)
 	fwkplugin.Register(utilization.UtilizationDetectorType, utilization.UtilizationDetectorFactory)
+	fwkplugin.Register(sdrunningrequests.RunningRequestsDetectorType, sdrunningrequests.RunningRequestsDetectorFactory)
 }
 
 func (r *Runner) parseConfigurationPhaseOne(ctx context.Context, opts *runserver.Options) (*configapi.EndpointPickerConfig, error) {
