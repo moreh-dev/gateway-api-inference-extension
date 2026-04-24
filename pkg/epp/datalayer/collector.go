@@ -83,14 +83,20 @@ type Collector struct {
 	// for change-only logging. Only accessed from the collection goroutine — no synchronization required.
 	lastPollErrors    map[string]error
 	lastExtractErrors map[string]error
+
+	// poolInfo for reporting endpoint health status (Moreh MAF-19378 per-endpoint health check).
+	poolInfo PoolInfo
 }
 
 // NewCollector returns a new collector.
-func NewCollector() *Collector {
+// poolInfo is used to report per-endpoint health state after each poll cycle;
+// pass nil to disable health reporting.
+func NewCollector(poolInfo PoolInfo) *Collector {
 	return &Collector{
 		done:              make(chan struct{}),
 		lastPollErrors:    make(map[string]error),
 		lastExtractErrors: make(map[string]error),
+		poolInfo:          poolInfo,
 	}
 }
 
@@ -137,6 +143,10 @@ func (c *Collector) startCollection(ctx context.Context, ticker Ticker, ep fwkdl
 				case <-c.ctx.Done(): // per endpoint context cancelled
 					return
 				case <-ticker.Channel():
+					// Aggregate poll errors across sources for per-endpoint health reporting.
+					// Extractors are intentionally excluded — their failures don't mark the endpoint unhealthy
+					// (Moreh MAF-19378 semantic: health = "Can we talk to this endpoint?").
+					var pollErrs error
 					for _, src := range sources {
 						tn := src.TypedName()
 						key := tn.String()
@@ -147,6 +157,7 @@ func (c *Collector) startCollection(ctx context.Context, ticker Ticker, ep fwkdl
 
 						logErrorTransition(logger, c.lastPollErrors, key, "poll", "source", err)
 						if err != nil {
+							pollErrs = errors.Join(pollErrs, err)
 							continue
 						}
 
@@ -157,6 +168,10 @@ func (c *Collector) startCollection(ctx context.Context, ticker Ticker, ep fwkdl
 								logErrorTransition(logger, c.lastExtractErrors, extKey, "extract", "extractor", extErr)
 							}
 						}
+					}
+					// Report endpoint health based on poll result (Moreh MAF-19378).
+					if c.poolInfo != nil {
+						c.poolInfo.EndpointSetHealthy(endpoint, pollErrs == nil)
 					}
 				}
 			}

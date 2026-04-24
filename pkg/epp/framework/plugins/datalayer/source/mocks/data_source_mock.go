@@ -70,17 +70,22 @@ func (fds *MetricsDataSource) SetErrors(errors map[types.NamespacedName]error) {
 	fds.errors = errors
 }
 
+// Poll updates the endpoint metrics from the mock's metrics map. When an error
+// is configured for the endpoint, the error is returned to the caller so that
+// per-endpoint health-check logic can react to it (Moreh behavior preserved on
+// top of upstream's skeleton).
 func (fds *MetricsDataSource) Poll(ctx context.Context, ep fwkdl.Endpoint) (any, error) {
 	atomic.AddInt64(&fds.CallCount, 1)
 	fds.mu.RLock()
 	defer fds.mu.RUnlock()
 	nn := ep.GetMetadata().Clone().NamespacedName
+	if err, ok := fds.errors[nn]; ok {
+		return nil, err
+	}
 	if metrics, ok := fds.metrics[nn]; ok {
-		if _, ok := fds.errors[nn]; !ok {
-			clone := metrics.Clone()
-			clone.UpdateTime = time.Now()
-			ep.UpdateMetrics(clone)
-		}
+		clone := metrics.Clone()
+		clone.UpdateTime = time.Now()
+		ep.UpdateMetrics(clone)
 	}
 	return nil, nil
 }
