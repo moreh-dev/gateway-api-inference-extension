@@ -18,6 +18,8 @@ package server
 
 import (
 	"fmt"
+	"os"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -35,6 +37,30 @@ import (
 	"sigs.k8s.io/gateway-api-inference-extension/apix/v1alpha2"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/common"
 )
+
+// gracefulShutdownTimeoutEnvVar is the env var that overrides the
+// controller-runtime manager's GracefulShutdownTimeout. The value must be a Go
+// duration string (e.g. "120s", "5m"). When unset or empty, the
+// controller-runtime default is used (30s as of v0.23.x). Any negative
+// duration (e.g. "-1s") signals "wait indefinitely" per controller-runtime
+// convention.
+const gracefulShutdownTimeoutEnvVar = "EPP_GRACEFUL_SHUTDOWN_TIMEOUT"
+
+// resolveGracefulShutdownTimeout reads EPP_GRACEFUL_SHUTDOWN_TIMEOUT.
+// Returns (nil, nil) when unset or empty so the caller leaves
+// manager.Options.GracefulShutdownTimeout at the controller-runtime default.
+// Returns an error on parse failure (fail-fast on operator typo).
+func resolveGracefulShutdownTimeout() (*time.Duration, error) {
+	raw := os.Getenv(gracefulShutdownTimeoutEnvVar)
+	if raw == "" {
+		return nil, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse %q: %w", raw, err)
+	}
+	return &d, nil
+}
 
 var scheme = runtime.NewScheme()
 
@@ -58,6 +84,14 @@ func defaultManagerOptions(cfg ControllerConfig, gknn common.GKNN, metricsServer
 			},
 		},
 		Metrics: metricsServerOptions,
+	}
+
+	gracefulShutdownTimeout, err := resolveGracefulShutdownTimeout()
+	if err != nil {
+		return ctrl.Options{}, fmt.Errorf("invalid %s: %w", gracefulShutdownTimeoutEnvVar, err)
+	}
+	if gracefulShutdownTimeout != nil {
+		opt.GracefulShutdownTimeout = gracefulShutdownTimeout
 	}
 	if cfg.startCrdReconcilers {
 		if cfg.hasInferenceObjective {
