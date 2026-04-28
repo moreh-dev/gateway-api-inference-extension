@@ -48,9 +48,6 @@ const (
 	typePredictedTTFT          = "predicted_ttft"
 	typeTTFTPredictionDuration = "ttft_prediction_duration"
 	typeTTFTSLOViolation       = "ttft_slo_violation"
-	typeTTFTSLOThreshold       = "ttft_slo_threshold" // Moreh MAF-19466
-
-	typeITL = "itl" // Moreh 5701fa97
 )
 
 var (
@@ -75,14 +72,6 @@ var (
 		0.0005, 0.00205, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.125, 0.15, 0.2,
 		0.3, 0.4, 0.5, 0.6, 0.8, 1, 1.5, 2, 3, 4.5, 6, 12, 18, 24, 30, 36, 48, 60,
 		90, 120, 180, 270, 360,
-	}
-
-	// itlBuckets for inter-token latency (1ms–5s) with fine granularity in the 1ms–50ms range
-	itlBuckets = []float64{
-		0.001, 0.002, 0.004, 0.006, 0.008,
-		0.01, 0.012, 0.014, 0.016, 0.018, 0.02,
-		0.025, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1,
-		0.15, 0.2, 0.3, 0.5, 1.0, 2.0, 5.0,
 	}
 
 	// predictionLatencyBuckets for internal latency (predictions) from 100us to 5s
@@ -156,16 +145,6 @@ var (
 			Name:      "request_tpot_seconds",
 			Help:      metricsutil.HelpMsgWithStability("Inference model TPOT distribution in seconds for each model and target model.", compbasemetrics.ALPHA),
 			Buckets:   tpotBuckets,
-		},
-		modelLabels,
-	)
-
-	requestITL = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Subsystem: inferenceObjectiveComponent,
-			Name:      "request_itl_seconds",
-			Help:      metricsutil.HelpMsgWithStability("Inference model inter-token latency distribution in seconds for each model and target model.", compbasemetrics.ALPHA),
-			Buckets:   itlBuckets,
 		},
 		modelLabels,
 	)
@@ -494,7 +473,6 @@ func Register(customCollectors ...prometheus.Collector) {
 
 		// Register Histograms
 		metrics.Registry.MustRegister(requestTPOT)
-		metrics.Registry.MustRegister(requestITL)
 		metrics.Registry.MustRegister(requestTTFT)
 		metrics.Registry.MustRegister(requestPredictedTPOT)
 		metrics.Registry.MustRegister(requestPredictedTTFT)
@@ -546,7 +524,6 @@ func Reset() {
 
 	// Reset Histograms
 	requestTPOT.Reset()
-	requestITL.Reset()
 	requestTTFT.Reset()
 	requestPredictedTPOT.Reset()
 	requestPredictedTTFT.Reset()
@@ -624,24 +601,6 @@ func RecordRequestTPOT(ctx context.Context, modelName, targetModelName string, t
 	requestTPOT.WithLabelValues(modelName, targetModelName).Observe(tpot)
 	inferenceGauges.WithLabelValues(modelName, targetModelName, typeTPOT).Set(tpot)
 	return true
-}
-
-// RecordRequestITL records a single inter-token latency observation.
-// Unlike TPOT (which records one average per request), ITL records each
-// individual token-to-token latency as a separate histogram observation.
-func RecordRequestITL(ctx context.Context, modelName, targetModelName string, itl float64) bool {
-	if itl < 0 {
-		log.FromContext(ctx).V(logutil.DEFAULT).Error(nil, "ITL value must be non-negative",
-			"modelName", modelName, "targetModelName", targetModelName, "itl", itl)
-		return false
-	}
-	requestITL.WithLabelValues(modelName, targetModelName).Observe(itl)
-	return true
-}
-
-// SetRequestITLGauge sets the ITL gauge to the average ITL of a completed request.
-func SetRequestITLGauge(modelName, targetModelName string, avgITL float64) {
-	inferenceGauges.WithLabelValues(modelName, targetModelName, typeITL).Set(avgITL)
 }
 
 // RecordRequestTPOTWithSLO records TPOT and checks for SLO violation.

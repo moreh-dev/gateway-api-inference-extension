@@ -46,13 +46,8 @@ const (
 	outputTokensMetric                 = inferenceObjectiveComponent + "_output_tokens"
 	normalizedTimePerOutputTokenMetric = inferenceObjectiveComponent + "_normalized_time_per_output_token_seconds"
 	runningRequestsMetric              = inferenceObjectiveComponent + "_running_requests"
-	promptCachedTokensMetric           = inferenceObjectiveComponent + "_prompt_cached_tokens"
 	kvCacheAvgUsageMetric              = inferencePoolComponent + "_average_kv_cache_utilization"
 	queueAvgSizeMetric                 = inferencePoolComponent + "_average_queue_size"
-	perPodQueueSizeMetrics             = inferencePoolComponent + "_per_pod_queue_size"
-	requestTTFTSecondsMetric           = inferenceObjectiveComponent + "_request_ttft_seconds"
-	requestTPOTSecondsMetric           = inferenceObjectiveComponent + "_request_tpot_seconds"
-	requestITLSecondsMetric            = inferenceObjectiveComponent + "_request_itl_seconds"
 	runningRequestsAvgMetric           = inferencePoolComponent + "_average_running_requests"
 )
 
@@ -1232,37 +1227,6 @@ func TestFlowControlQueueBytesMetric(t *testing.T) {
 	val, err = testutil.GetGaugeMetricValue(flowControlQueueBytes.WithLabelValues("user-c", "100", pool, model, target))
 	require.NoError(t, err, "Failed to get gauge value for non-existent user-c/100")
 	require.Equal(t, 0.0, val, "Gauge value for non-existent labels should be 0")
-}
-
-func TestRecordRequestITL(t *testing.T) {
-	Reset()
-	ctx := logutil.NewTestLoggerIntoContext(context.Background())
-
-	tests := []struct {
-		name   string
-		itl    float64
-		wantOk bool
-	}{
-		{name: "valid ITL 10ms", itl: 0.01, wantOk: true},
-		{name: "valid ITL 0", itl: 0, wantOk: true},
-		{name: "negative ITL", itl: -0.01, wantOk: false},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			ok := RecordRequestITL(ctx, "model", "target", tc.itl)
-			require.Equal(t, tc.wantOk, ok)
-		})
-	}
-}
-
-func TestSetRequestITLGauge(t *testing.T) {
-	Reset()
-	SetRequestITLGauge("model", "target", 0.015)
-
-	val, err := testutil.GetGaugeMetricValue(inferenceGauges.WithLabelValues("model", "target", typeITL))
-	require.NoError(t, err)
-	require.InDelta(t, 0.015, val, 0.0001)
 }
 
 func TestFlowControlPoolSaturationMetric(t *testing.T) {

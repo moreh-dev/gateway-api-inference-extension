@@ -90,11 +90,6 @@ type predictedLatencyCtx struct {
 	prefillTokensAtDispatch          int64 // snapshot from decode pod counter (used for TPOT training + prediction)
 	prefillTokensAtDispatchOnPrefill int64 // snapshot from prefill pod counter (used for TTFT training in disaggregated mode)
 	decodeTokensAtDispatch           int64
-
-	// Moreh 5701fa97: per-request ITL accumulators for the average-ITL gauge reported at EOS.
-	// itlSum is in seconds; itlCount counts inter-token observations.
-	itlSum   float64
-	itlCount int
 }
 
 func newPredictedLatencyContext(request *schedulingtypes.LLMRequest) *predictedLatencyCtx {
@@ -320,12 +315,6 @@ func (t *PredictedLatency) ResponseBody(ctx context.Context, request *scheduling
 		}
 		if t.podCounter(&t.prefillTokensInFlight, decodePodKey).Add(-int64(predictedLatencyCtx.inputTokenCount)) == 0 {
 			t.prefillTokensInFlight.Delete(decodePodKey)
-		}
-
-		// Moreh 5701fa97: publish the per-request average ITL gauge at request completion.
-		if predictedLatencyCtx.itlCount > 0 {
-			avgITL := predictedLatencyCtx.itlSum / float64(predictedLatencyCtx.itlCount)
-			metrics.SetRequestITLGauge(predictedLatencyCtx.incomingModelName, request.TargetModel, avgITL)
 		}
 
 		id := request.Headers[reqcommon.RequestIdHeaderKey]
