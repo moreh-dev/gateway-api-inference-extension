@@ -89,6 +89,10 @@ type RequestContext struct {
 	Priority                  int
 	RequestReceivedTimestamp  time.Time
 	ResponseCompleteTimestamp time.Time
+	FirstTokenTimestamp       time.Time
+	LastTokenTimestamp        time.Time
+	ITLCount                  int
+	ITLSum                    float64
 	RequestSize               int
 	Usage                     fwkrq.Usage
 	ResponseSize              int

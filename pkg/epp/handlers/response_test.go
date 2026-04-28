@@ -19,15 +19,20 @@ package handlers
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	logutil "sigs.k8s.io/gateway-api-inference-extension/pkg/common/observability/logging"
 	fwkdl "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/interface/datalayer"
 	fwkrq "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/interface/requestcontrol"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/requesthandling/parsers/openai"
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/metadata"
+	"sigs.k8s.io/gateway-api-inference-extension/pkg/epp/metrics"
 )
 
 const (
@@ -334,6 +339,98 @@ func TestHandleResponseBodyModelStreaming_TokenAccumulation(t *testing.T) {
 			assert.Equal(t, tc.wantUsage, reqCtx.Usage, "Usage data should match expected accumulation")
 		})
 	}
+}
+
+func TestHandleResponseBody_StreamingTTFTITLTPOT(t *testing.T) {
+	metrics.Register()
+	metrics.Reset()
+	ctx := logutil.NewTestLoggerIntoContext(context.Background())
+
+	server := &StreamingServer{
+		parser:   openai.NewOpenAIParser(),
+		director: &mockDirector{},
+	}
+	reqCtx := &RequestContext{
+		IncomingModelName:        "m1",
+		TargetModelName:          "tm1",
+		RequestReceivedTimestamp: time.Now(),
+		modelServerStreaming:     true,
+		Response:                 &Response{Headers: map[string]string{"content-type": "text/event-stream"}},
+	}
+
+	// Chunk 1 (first token): FirstTokenTimestamp set, no ITL yet.
+	server.HandleResponseBody(ctx, reqCtx, []byte(`data: {"choices":[{"text":"a"}]}`+"\n"), false)
+	require.False(t, reqCtx.FirstTokenTimestamp.IsZero(), "FirstTokenTimestamp should be set on first chunk")
+	require.Equal(t, 0, reqCtx.ITLCount, "no ITL on first chunk")
+
+	// Chunk 2: ITL observation #1.
+	time.Sleep(5 * time.Millisecond)
+	server.HandleResponseBody(ctx, reqCtx, []byte(`data: {"choices":[{"text":"b"}]}`+"\n"), false)
+	require.Equal(t, 1, reqCtx.ITLCount, "ITL should be recorded on second chunk")
+	require.Greater(t, reqCtx.ITLSum, 0.0)
+
+	// Chunk 3: ITL observation #2.
+	time.Sleep(5 * time.Millisecond)
+	server.HandleResponseBody(ctx, reqCtx, []byte(`data: {"choices":[{"text":"c"}]}`+"\n"), false)
+	require.Equal(t, 2, reqCtx.ITLCount)
+
+	// EOS chunk: TTFT, TPOT, avg ITL gauge fire.
+	reqCtx.ResponseCompleteTimestamp = time.Now()
+	server.HandleResponseBody(ctx, reqCtx, []byte(`data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`+"\n"+`data: [DONE]`), true)
+
+	gathered, err := crmetrics.Registry.Gather()
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), histogramSampleCount(gathered, "inference_objective_request_ttft_seconds"), "TTFT recorded once")
+	assert.Equal(t, uint64(2), histogramSampleCount(gathered, "inference_objective_request_itl_seconds"), "ITL recorded for each non-first chunk")
+	assert.Equal(t, uint64(1), histogramSampleCount(gathered, "inference_objective_request_tpot_seconds"), "TPOT recorded once")
+}
+
+func TestHandleResponseBody_NonStreamingNoTTFT(t *testing.T) {
+	metrics.Register()
+	metrics.Reset()
+	ctx := logutil.NewTestLoggerIntoContext(context.Background())
+
+	server := &StreamingServer{
+		parser:   openai.NewOpenAIParser(),
+		director: &mockDirector{},
+	}
+	now := time.Now()
+	reqCtx := &RequestContext{
+		IncomingModelName:         "m1",
+		TargetModelName:           "tm1",
+		RequestReceivedTimestamp:  now.Add(-100 * time.Millisecond),
+		ResponseCompleteTimestamp: now,
+		modelServerStreaming:      false, // ← non-streaming
+		Response:                  &Response{Headers: map[string]string{}},
+	}
+
+	// Single non-streaming response with EOS=true.
+	server.HandleResponseBody(ctx, reqCtx, []byte(body), true)
+	require.True(t, reqCtx.FirstTokenTimestamp.IsZero(), "non-streaming should not populate FirstTokenTimestamp")
+	require.Equal(t, 0, reqCtx.ITLCount)
+
+	gathered, err := crmetrics.Registry.Gather()
+	require.NoError(t, err)
+	assert.Equal(t, uint64(0), histogramSampleCount(gathered, "inference_objective_request_ttft_seconds"), "TTFT should not fire for non-streaming")
+	assert.Equal(t, uint64(0), histogramSampleCount(gathered, "inference_objective_request_itl_seconds"))
+	assert.Equal(t, uint64(0), histogramSampleCount(gathered, "inference_objective_request_tpot_seconds"))
+}
+
+// histogramSampleCount returns the total observation count for a histogram metric.
+func histogramSampleCount(families []*dto.MetricFamily, name string) uint64 {
+	for _, mf := range families {
+		if mf.GetName() != name {
+			continue
+		}
+		var total uint64
+		for _, m := range mf.Metric {
+			if m.Histogram != nil {
+				total += m.Histogram.GetSampleCount()
+			}
+		}
+		return total
+	}
+	return 0
 }
 
 func TestGenerateResponseHeaders_Sanitization(t *testing.T) {

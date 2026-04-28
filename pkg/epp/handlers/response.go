@@ -18,6 +18,7 @@ package handlers
 
 import (
 	"context"
+	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -47,6 +48,21 @@ func (s *StreamingServer) HandleResponseBody(ctx context.Context, reqCtx *Reques
 
 	reqCtx.ResponseSize += len(responseBytes)
 
+	// Approximation: any non-empty chunk counts as a token event.
+	// Pre-token SSE control events (Responses API) can underestimate TTFT.
+	if reqCtx.modelServerStreaming && !endOfStream && len(responseBytes) > 0 {
+		now := time.Now()
+		if reqCtx.FirstTokenTimestamp.IsZero() {
+			reqCtx.FirstTokenTimestamp = now
+		} else {
+			itl := now.Sub(reqCtx.LastTokenTimestamp).Seconds()
+			metrics.RecordRequestITL(ctx, reqCtx.IncomingModelName, reqCtx.TargetModelName, itl)
+			reqCtx.ITLCount++
+			reqCtx.ITLSum += itl
+		}
+		reqCtx.LastTokenTimestamp = now
+	}
+
 	parsedResp, err := s.parser.ParseResponse(ctx, responseBytes, reqCtx.Response.Headers, endOfStream)
 	if err != nil {
 		logger.Error(err, "parsing response")
@@ -62,6 +78,25 @@ func (s *StreamingServer) HandleResponseBody(ctx context.Context, reqCtx *Reques
 		metrics.RecordNormalizedTimePerOutputToken(ctx, reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.RequestReceivedTimestamp, reqCtx.ResponseCompleteTimestamp, reqCtx.Usage.CompletionTokens)
 		metrics.RecordRequestLatencies(ctx, reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.RequestReceivedTimestamp, reqCtx.ResponseCompleteTimestamp)
 		metrics.RecordResponseSizes(reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.ResponseSize)
+		if !reqCtx.FirstTokenTimestamp.IsZero() {
+			ttft := reqCtx.FirstTokenTimestamp.Sub(reqCtx.RequestReceivedTimestamp).Seconds()
+			metrics.RecordRequestTTFT(ctx, reqCtx.IncomingModelName, reqCtx.TargetModelName, ttft)
+
+			if reqCtx.ITLCount > 0 {
+				metrics.SetRequestITLGauge(reqCtx.IncomingModelName, reqCtx.TargetModelName, reqCtx.ITLSum/float64(reqCtx.ITLCount))
+			}
+
+			// Fall back to ITLCount+1 when Usage is missing (each ITL = one inter-token interval).
+			effectiveTokens := int(reqCtx.Usage.CompletionTokens)
+			if effectiveTokens <= 1 && reqCtx.ITLCount > 0 {
+				effectiveTokens = reqCtx.ITLCount + 1
+			}
+			if effectiveTokens > 1 {
+				decodeDuration := reqCtx.ResponseCompleteTimestamp.Sub(reqCtx.FirstTokenTimestamp).Seconds()
+				tpot := decodeDuration / float64(effectiveTokens-1)
+				metrics.RecordRequestTPOT(ctx, reqCtx.IncomingModelName, reqCtx.TargetModelName, tpot)
+			}
+		}
 	}
 	return s.director.HandleResponseBody(ctx, reqCtx, endOfStream)
 }
