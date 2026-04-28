@@ -17,6 +17,7 @@ limitations under the License.
 package server
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -27,40 +28,84 @@ import (
 	"sigs.k8s.io/gateway-api-inference-extension/pkg/common"
 )
 
+// envMode distinguishes "env var entirely absent from the process environment"
+// from "env var set to the empty string" — a distinction t.Setenv alone cannot
+// express. Both currently map to the same behavior in
+// resolveGracefulShutdownTimeout (because os.Getenv treats them identically),
+// but covering them separately guards against accidental regressions if the
+// resolver is ever switched to os.LookupEnv.
+type envMode int
+
+const (
+	envUnset envMode = iota
+	envEmpty
+	envSet
+)
+
+// applyEnv configures the env var according to mode for the duration of the
+// test. For envUnset it removes the variable from the process environment and
+// restores any prior value via t.Cleanup.
+func applyEnv(t *testing.T, mode envMode, val string) {
+	t.Helper()
+	switch mode {
+	case envUnset:
+		prev, hadPrev := os.LookupEnv(gracefulShutdownTimeoutEnvVar)
+		if err := os.Unsetenv(gracefulShutdownTimeoutEnvVar); err != nil {
+			t.Fatalf("os.Unsetenv: %v", err)
+		}
+		t.Cleanup(func() {
+			if hadPrev {
+				_ = os.Setenv(gracefulShutdownTimeoutEnvVar, prev)
+			} else {
+				_ = os.Unsetenv(gracefulShutdownTimeoutEnvVar)
+			}
+		})
+	case envEmpty:
+		t.Setenv(gracefulShutdownTimeoutEnvVar, "")
+	case envSet:
+		t.Setenv(gracefulShutdownTimeoutEnvVar, val)
+	}
+}
+
 func TestResolveGracefulShutdownTimeout(t *testing.T) {
 	tests := []struct {
 		name    string
+		mode    envMode
 		envVal  string
-		envSet  bool
 		want    *time.Duration
 		wantErr bool
 	}{
 		{
-			name:   "env var unset returns nil with no error",
-			envSet: false,
-			want:   nil,
+			name: "env var truly unset returns nil with no error",
+			mode: envUnset,
+			want: nil,
 		},
 		{
-			name:   "empty env var returns nil with no error",
-			envSet: true,
-			envVal: "",
-			want:   nil,
+			name: "env var set to empty string returns nil with no error",
+			mode: envEmpty,
+			want: nil,
 		},
 		{
 			name:   "valid positive duration is parsed",
-			envSet: true,
+			mode:   envSet,
 			envVal: "30m",
 			want:   durPtr(30 * time.Minute),
 		},
 		{
 			name:   "negative duration passes through (controller-runtime convention for wait-forever)",
-			envSet: true,
+			mode:   envSet,
 			envVal: "-1s",
 			want:   durPtr(-1 * time.Second),
 		},
 		{
+			name:   "zero duration passes through (controller-runtime convention for disable-graceful)",
+			mode:   envSet,
+			envVal: "0s",
+			want:   durPtr(0),
+		},
+		{
 			name:    "invalid duration returns an error",
-			envSet:  true,
+			mode:    envSet,
 			envVal:  "garbage",
 			wantErr: true,
 		},
@@ -68,12 +113,7 @@ func TestResolveGracefulShutdownTimeout(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.envSet {
-				t.Setenv(gracefulShutdownTimeoutEnvVar, tt.envVal)
-			} else {
-				// Defensive: unset even if leaked from runner env.
-				t.Setenv(gracefulShutdownTimeoutEnvVar, "")
-			}
+			applyEnv(t, tt.mode, tt.envVal)
 
 			got, err := resolveGracefulShutdownTimeout()
 			if tt.wantErr {
@@ -107,7 +147,7 @@ func TestDefaultManagerOptions_GracefulShutdownTimeout(t *testing.T) {
 	}
 
 	t.Run("env set to valid duration injects the pointer", func(t *testing.T) {
-		t.Setenv(gracefulShutdownTimeoutEnvVar, "7m")
+		applyEnv(t, envSet, "7m")
 		opts, err := defaultManagerOptions(ControllerConfig{}, gknn, metricsserver.Options{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -120,8 +160,19 @@ func TestDefaultManagerOptions_GracefulShutdownTimeout(t *testing.T) {
 		}
 	})
 
-	t.Run("env unset leaves GracefulShutdownTimeout nil (controller-runtime default)", func(t *testing.T) {
-		t.Setenv(gracefulShutdownTimeoutEnvVar, "")
+	t.Run("env truly unset leaves GracefulShutdownTimeout nil (controller-runtime applies its default)", func(t *testing.T) {
+		applyEnv(t, envUnset, "")
+		opts, err := defaultManagerOptions(ControllerConfig{}, gknn, metricsserver.Options{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if opts.GracefulShutdownTimeout != nil {
+			t.Errorf("expected nil GracefulShutdownTimeout, got %v", *opts.GracefulShutdownTimeout)
+		}
+	})
+
+	t.Run("env set to empty string leaves GracefulShutdownTimeout nil", func(t *testing.T) {
+		applyEnv(t, envEmpty, "")
 		opts, err := defaultManagerOptions(ControllerConfig{}, gknn, metricsserver.Options{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -132,7 +183,7 @@ func TestDefaultManagerOptions_GracefulShutdownTimeout(t *testing.T) {
 	})
 
 	t.Run("invalid env returns an error from defaultManagerOptions", func(t *testing.T) {
-		t.Setenv(gracefulShutdownTimeoutEnvVar, "garbage")
+		applyEnv(t, envSet, "garbage")
 		_, err := defaultManagerOptions(ControllerConfig{}, gknn, metricsserver.Options{})
 		if err == nil {
 			t.Fatal("expected error from defaultManagerOptions, got nil")

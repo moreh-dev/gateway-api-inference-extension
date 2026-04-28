@@ -40,10 +40,10 @@ import (
 
 // gracefulShutdownTimeoutEnvVar is the env var that overrides the
 // controller-runtime manager's GracefulShutdownTimeout. The value must be a Go
-// duration string (e.g. "120s", "5m"). When unset or empty, the
-// controller-runtime default is used (30s as of v0.23.x). Any negative
-// duration (e.g. "-1s") signals "wait indefinitely" per controller-runtime
-// convention.
+// duration string (e.g. "120s", "5m"). When unset or empty, the option is left
+// nil so controller-runtime applies its built-in default. A negative duration
+// (e.g. "-1s") means "wait indefinitely" per controller-runtime convention;
+// a zero duration disables the graceful drain.
 const gracefulShutdownTimeoutEnvVar = "EPP_GRACEFUL_SHUTDOWN_TIMEOUT"
 
 // resolveGracefulShutdownTimeout reads EPP_GRACEFUL_SHUTDOWN_TIMEOUT.
