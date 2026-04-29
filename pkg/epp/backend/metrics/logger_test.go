@@ -70,6 +70,10 @@ func TestRefreshPrometheusMetricsAvgValues(t *testing.T) {
 
 type fakeOddMetricsDataStore struct{}
 
+// EndpointSetHealthy satisfies the PoolInfo interface (Moreh MAF-19378 per-endpoint health).
+// Test stub: no-op since the logger test does not exercise health tracking.
+func (f *fakeOddMetricsDataStore) EndpointSetHealthy(_ fwkdl.Endpoint, _ bool) {}
+
 func (f *fakeOddMetricsDataStore) PoolGet() (*datalayer.EndpointPool, error) {
 	pool := &v1.InferencePool{Spec: v1.InferencePoolSpec{TargetPorts: []v1.Port{{Number: 8000}}}}
 	return poolutil.InferencePoolToEndpointPool(pool), nil

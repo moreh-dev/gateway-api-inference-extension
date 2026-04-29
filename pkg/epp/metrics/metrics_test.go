@@ -1302,3 +1302,43 @@ func TestInferenceModelRewriteDecisionsTotalMetric(t *testing.T) {
 		})
 	}
 }
+
+func TestRecordRequestITL(t *testing.T) {
+	Reset()
+	ctx := logutil.NewTestLoggerIntoContext(context.Background())
+
+	// Negative value rejected.
+	require.False(t, RecordRequestITL(ctx, "m1", "tm1", -0.5))
+	count, err := testutil.GetHistogramMetricCount(requestITL.WithLabelValues("m1", "tm1"))
+	require.NoError(t, err)
+	require.Equal(t, uint64(0), count)
+
+	// Multiple positive values are observed individually (one observation per call).
+	require.True(t, RecordRequestITL(ctx, "m1", "tm1", 0.05))
+	require.True(t, RecordRequestITL(ctx, "m1", "tm1", 0.06))
+	require.True(t, RecordRequestITL(ctx, "m1", "tm1", 0.07))
+	count, err = testutil.GetHistogramMetricCount(requestITL.WithLabelValues("m1", "tm1"))
+	require.NoError(t, err)
+	require.Equal(t, uint64(3), count)
+
+	// Different label set is independent.
+	require.True(t, RecordRequestITL(ctx, "m2", "tm2", 0.01))
+	count, err = testutil.GetHistogramMetricCount(requestITL.WithLabelValues("m2", "tm2"))
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), count)
+}
+
+func TestSetRequestITLGauge(t *testing.T) {
+	Reset()
+
+	SetRequestITLGauge("m1", "tm1", 0.04)
+	val, err := testutil.GetGaugeMetricValue(inferenceGauges.WithLabelValues("m1", "tm1", typeITL))
+	require.NoError(t, err)
+	require.Equal(t, 0.04, val)
+
+	// Last write wins.
+	SetRequestITLGauge("m1", "tm1", 0.08)
+	val, err = testutil.GetGaugeMetricValue(inferenceGauges.WithLabelValues("m1", "tm1", typeITL))
+	require.NoError(t, err)
+	require.Equal(t, 0.08, val)
+}

@@ -48,6 +48,8 @@ const (
 	typePredictedTTFT          = "predicted_ttft"
 	typeTTFTPredictionDuration = "ttft_prediction_duration"
 	typeTTFTSLOViolation       = "ttft_slo_violation"
+
+	typeITL = "itl"
 )
 
 var (
@@ -72,6 +74,14 @@ var (
 		0.0005, 0.00205, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.125, 0.15, 0.2,
 		0.3, 0.4, 0.5, 0.6, 0.8, 1, 1.5, 2, 3, 4.5, 6, 12, 18, 24, 30, 36, 48, 60,
 		90, 120, 180, 270, 360,
+	}
+
+	// itlBuckets for inter-token latency (1ms–5s) with fine granularity in the 1ms–50ms range.
+	itlBuckets = []float64{
+		0.001, 0.002, 0.004, 0.006, 0.008,
+		0.01, 0.012, 0.014, 0.016, 0.018, 0.02,
+		0.025, 0.03, 0.04, 0.05, 0.06, 0.08, 0.1,
+		0.15, 0.2, 0.3, 0.5, 1.0, 2.0, 5.0,
 	}
 
 	// predictionLatencyBuckets for internal latency (predictions) from 100us to 5s
@@ -135,6 +145,16 @@ var (
 			Name:      "request_ttft_prediction_duration_seconds",
 			Help:      metricsutil.HelpMsgWithStability("Duration taken to generate TTFT predictions in seconds for each model and target model.", compbasemetrics.ALPHA),
 			Buckets:   predictionLatencyBuckets,
+		},
+		modelLabels,
+	)
+
+	requestITL = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Subsystem: inferenceObjectiveComponent,
+			Name:      "request_itl_seconds",
+			Help:      metricsutil.HelpMsgWithStability("Inference model inter-token latency distribution in seconds for each model and target model.", compbasemetrics.ALPHA),
+			Buckets:   itlBuckets,
 		},
 		modelLabels,
 	)
@@ -472,12 +492,13 @@ func Register(customCollectors ...prometheus.Collector) {
 		metrics.Registry.MustRegister(inferenceGauges)
 
 		// Register Histograms
-		metrics.Registry.MustRegister(requestTPOT)
 		metrics.Registry.MustRegister(requestTTFT)
-		metrics.Registry.MustRegister(requestPredictedTPOT)
+		metrics.Registry.MustRegister(requestITL)
+		metrics.Registry.MustRegister(requestTPOT)
 		metrics.Registry.MustRegister(requestPredictedTTFT)
-		metrics.Registry.MustRegister(requestTPOTPredictionDuration)
+		metrics.Registry.MustRegister(requestPredictedTPOT)
 		metrics.Registry.MustRegister(requestTTFTPredictionDuration)
+		metrics.Registry.MustRegister(requestTPOTPredictionDuration)
 
 		// Register SLO violation counters
 		metrics.Registry.MustRegister(sloViolationCounter)
@@ -523,12 +544,13 @@ func Reset() {
 	inferenceGauges.Reset()
 
 	// Reset Histograms
-	requestTPOT.Reset()
 	requestTTFT.Reset()
-	requestPredictedTPOT.Reset()
+	requestITL.Reset()
+	requestTPOT.Reset()
 	requestPredictedTTFT.Reset()
-	requestTPOTPredictionDuration.Reset()
+	requestPredictedTPOT.Reset()
 	requestTTFTPredictionDuration.Reset()
+	requestTPOTPredictionDuration.Reset()
 
 	// Reset SLO violation counter
 	sloViolationCounter.Reset()
@@ -592,65 +614,6 @@ func RecordRequestLatencies(ctx context.Context, modelName, targetModelName stri
 	return true
 }
 
-func RecordRequestTPOT(ctx context.Context, modelName, targetModelName string, tpot float64) bool {
-	if tpot < 0 {
-		log.FromContext(ctx).V(logutil.DEFAULT).Error(nil, "TPOT value must be non-negative",
-			"modelName", modelName, "targetModelName", targetModelName, "tpot", tpot)
-		return false
-	}
-	requestTPOT.WithLabelValues(modelName, targetModelName).Observe(tpot)
-	inferenceGauges.WithLabelValues(modelName, targetModelName, typeTPOT).Set(tpot)
-	return true
-}
-
-// RecordRequestTPOTWithSLO records TPOT and checks for SLO violation.
-// If tpot exceeds the threshold, it records a violation (sets gauge to 1 and increments counter).
-// If tpot is within limits, it sets gauge to 0.
-func RecordRequestTPOTWithSLO(ctx context.Context, modelName, targetModelName string, tpot float64, sloThreshold float64) bool {
-	if tpot < 0 {
-		log.FromContext(ctx).V(logutil.DEFAULT).Error(nil, "TPOT value must be non-negative",
-			"modelName", modelName, "targetModelName", targetModelName, "tpot", tpot)
-		return false
-	}
-
-	// Check for SLO violation (tpot exceeds threshold)
-	if tpot > sloThreshold {
-		inferenceGauges.WithLabelValues(modelName, targetModelName, typeTPOTSLOViolation).Set(1)
-		sloViolationCounter.WithLabelValues(modelName, targetModelName, typeTPOT).Inc()
-		log.FromContext(ctx).V(logutil.DEFAULT).Info("TPOT SLO violation detected",
-			"modelName", modelName, "targetModelName", targetModelName, "tpot", tpot, "threshold", sloThreshold)
-	} else {
-		inferenceGauges.WithLabelValues(modelName, targetModelName, typeTPOTSLOViolation).Set(0)
-	}
-
-	return true
-}
-
-// TPOT records duration of request.
-func RecordRequestPredictedTPOT(ctx context.Context, modelName, targetModelName string, predicted_tpot float64) bool {
-	if predicted_tpot < 0 {
-		log.FromContext(ctx).V(logutil.DEFAULT).Error(nil, "Predicted TPOT value must be non-negative",
-			"modelName", modelName, "targetModelName", targetModelName, "tpot", predicted_tpot)
-		return false
-	}
-	requestPredictedTPOT.WithLabelValues(modelName, targetModelName).Observe(predicted_tpot)
-	inferenceGauges.WithLabelValues(modelName, targetModelName, typePredictedTPOT).Set(predicted_tpot)
-	return true
-}
-
-// RecordRequestTPOTPredictionDuration records the duration taken to generate TPOT predictions.
-func RecordRequestTPOTPredictionDuration(ctx context.Context, modelName, targetModelName string, duration float64) bool {
-	if duration < 0 {
-		log.FromContext(ctx).V(logutil.DEFAULT).Error(nil, "TPOT prediction duration must be non-negative",
-			"modelName", modelName, "targetModelName", targetModelName, "duration", duration)
-		return false
-	}
-	requestTPOTPredictionDuration.WithLabelValues(modelName, targetModelName).Observe(duration)
-	inferenceGauges.WithLabelValues(modelName, targetModelName, typeTPOTPredictionDuration).Set(duration)
-	return true
-}
-
-// TTFT records duration of request.
 func RecordRequestTTFT(ctx context.Context, modelName, targetModelName string, ttft float64) bool {
 	if ttft < 0 {
 		log.FromContext(ctx).V(logutil.DEFAULT).Error(nil, "TTFT value must be non-negative",
@@ -685,7 +648,6 @@ func RecordRequestTTFTWithSLO(ctx context.Context, modelName, targetModelName st
 	return true
 }
 
-// TPOT records duration of request.
 func RecordRequestPredictedTTFT(ctx context.Context, modelName, targetModelName string, predicted_ttft float64) bool {
 	if predicted_ttft < 0 {
 		log.FromContext(ctx).V(logutil.DEFAULT).Error(nil, "Predicted TTFT value must be non-negative",
@@ -706,6 +668,81 @@ func RecordRequestTTFTPredictionDuration(ctx context.Context, modelName, targetM
 	}
 	requestTTFTPredictionDuration.WithLabelValues(modelName, targetModelName).Observe(duration)
 	inferenceGauges.WithLabelValues(modelName, targetModelName, typeTTFTPredictionDuration).Set(duration)
+	return true
+}
+
+// RecordRequestITL records a single inter-token latency observation.
+// Unlike TPOT (which records one average per request), ITL records each
+// individual token-to-token latency as a separate histogram observation.
+func RecordRequestITL(ctx context.Context, modelName, targetModelName string, itl float64) bool {
+	if itl < 0 {
+		log.FromContext(ctx).V(logutil.DEFAULT).Error(nil, "ITL value must be non-negative",
+			"modelName", modelName, "targetModelName", targetModelName, "itl", itl)
+		return false
+	}
+	requestITL.WithLabelValues(modelName, targetModelName).Observe(itl)
+	return true
+}
+
+// SetRequestITLGauge sets the ITL gauge to the average ITL of a completed request.
+func SetRequestITLGauge(modelName, targetModelName string, avgITL float64) {
+	inferenceGauges.WithLabelValues(modelName, targetModelName, typeITL).Set(avgITL)
+}
+
+func RecordRequestTPOT(ctx context.Context, modelName, targetModelName string, tpot float64) bool {
+	if tpot < 0 {
+		log.FromContext(ctx).V(logutil.DEFAULT).Error(nil, "TPOT value must be non-negative",
+			"modelName", modelName, "targetModelName", targetModelName, "tpot", tpot)
+		return false
+	}
+	requestTPOT.WithLabelValues(modelName, targetModelName).Observe(tpot)
+	inferenceGauges.WithLabelValues(modelName, targetModelName, typeTPOT).Set(tpot)
+	return true
+}
+
+// RecordRequestTPOTWithSLO records TPOT and checks for SLO violation.
+// If tpot exceeds the threshold, it records a violation (sets gauge to 1 and increments counter).
+// If tpot is within limits, it sets gauge to 0.
+func RecordRequestTPOTWithSLO(ctx context.Context, modelName, targetModelName string, tpot float64, sloThreshold float64) bool {
+	if tpot < 0 {
+		log.FromContext(ctx).V(logutil.DEFAULT).Error(nil, "TPOT value must be non-negative",
+			"modelName", modelName, "targetModelName", targetModelName, "tpot", tpot)
+		return false
+	}
+
+	// Check for SLO violation (tpot exceeds threshold)
+	if tpot > sloThreshold {
+		inferenceGauges.WithLabelValues(modelName, targetModelName, typeTPOTSLOViolation).Set(1)
+		sloViolationCounter.WithLabelValues(modelName, targetModelName, typeTPOT).Inc()
+		log.FromContext(ctx).V(logutil.DEFAULT).Info("TPOT SLO violation detected",
+			"modelName", modelName, "targetModelName", targetModelName, "tpot", tpot, "threshold", sloThreshold)
+	} else {
+		inferenceGauges.WithLabelValues(modelName, targetModelName, typeTPOTSLOViolation).Set(0)
+	}
+
+	return true
+}
+
+func RecordRequestPredictedTPOT(ctx context.Context, modelName, targetModelName string, predicted_tpot float64) bool {
+	if predicted_tpot < 0 {
+		log.FromContext(ctx).V(logutil.DEFAULT).Error(nil, "Predicted TPOT value must be non-negative",
+			"modelName", modelName, "targetModelName", targetModelName, "tpot", predicted_tpot)
+		return false
+	}
+	requestPredictedTPOT.WithLabelValues(modelName, targetModelName).Observe(predicted_tpot)
+	inferenceGauges.WithLabelValues(modelName, targetModelName, typePredictedTPOT).Set(predicted_tpot)
+	return true
+}
+
+// RecordRequestTPOTPredictionDuration records the duration taken to generate TPOT predictions.
+func RecordRequestTPOTPredictionDuration(ctx context.Context, modelName, targetModelName string, duration float64) bool {
+	if duration < 0 {
+		log.FromContext(ctx).V(logutil.DEFAULT).Error(nil, "TPOT prediction duration must be non-negative",
+			"modelName", modelName, "targetModelName", targetModelName, "duration", duration)
+		return false
+	}
+	requestTPOTPredictionDuration.WithLabelValues(modelName, targetModelName).Observe(duration)
+	inferenceGauges.WithLabelValues(modelName, targetModelName, typeTPOTPredictionDuration).Set(duration)
 	return true
 }
 

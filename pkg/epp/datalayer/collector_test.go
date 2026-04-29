@@ -33,6 +33,25 @@ import (
 	datasourcemocks "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/datalayer/source/mocks"
 )
 
+// --- Fake PoolInfo ---
+
+// FakePoolInfo is a PoolInfo stub that counts EndpointSetHealthy calls.
+// Used by per-endpoint health-check tests (Moreh MAF-19378).
+type FakePoolInfo struct {
+	healthyCalls   int64
+	unhealthyCalls int64
+}
+
+func (f *FakePoolInfo) PoolGet() (*EndpointPool, error)                      { return nil, nil }
+func (f *FakePoolInfo) PodList(_ func(fwkdl.Endpoint) bool) []fwkdl.Endpoint { return nil }
+func (f *FakePoolInfo) EndpointSetHealthy(_ fwkdl.Endpoint, healthy bool) {
+	if healthy {
+		atomic.AddInt64(&f.healthyCalls, 1)
+	} else {
+		atomic.AddInt64(&f.unhealthyCalls, 1)
+	}
+}
+
 // errSource is a test stub that returns a configurable error from Poll.
 // The error is guarded by a mutex so it can safely be changed between ticks.
 type errSource struct {
@@ -76,7 +95,7 @@ var (
 )
 
 func TestCollectorCanStartOnlyOnce(t *testing.T) {
-	c := NewCollector()
+	c := NewCollector(nil)
 	ctx := context.Background()
 	ticker := mocks.NewTicker()
 
@@ -88,13 +107,13 @@ func TestCollectorCanStartOnlyOnce(t *testing.T) {
 }
 
 func TestCollectorStopBeforeStartIsAnError(t *testing.T) {
-	c := NewCollector()
+	c := NewCollector(nil)
 	err := c.Stop()
 	assert.Error(t, err, "collector stop called before start should error")
 }
 
 func TestCollectorCanStopOnlyOnce(t *testing.T) {
-	c := NewCollector()
+	c := NewCollector(nil)
 	ctx := context.Background()
 	ticker := mocks.NewTicker()
 
@@ -105,7 +124,7 @@ func TestCollectorCanStopOnlyOnce(t *testing.T) {
 
 func TestCollectorCollectsOnTicks(t *testing.T) {
 	source := &datasourcemocks.MetricsDataSource{}
-	c := NewCollector()
+	c := NewCollector(nil)
 	ticker := mocks.NewTicker()
 	ctx := context.Background()
 
@@ -123,7 +142,7 @@ func TestCollectorCollectsOnTicks(t *testing.T) {
 
 func TestCollectorStopCancelsContext(t *testing.T) {
 	source := &datasourcemocks.MetricsDataSource{}
-	c := NewCollector()
+	c := NewCollector(nil)
 	ticker := mocks.NewTicker()
 	ctx := context.Background()
 
@@ -164,7 +183,7 @@ func TestCollectorStartSourceValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := NewCollector()
+			c := NewCollector(nil)
 			ticker := mocks.NewTicker()
 			ctx := context.Background()
 
@@ -179,10 +198,51 @@ func TestCollectorStartSourceValidation(t *testing.T) {
 	}
 }
 
+// TestCollectorReportsEndpointHealth verifies Moreh MAF-19378: the collector
+// calls PoolInfo.EndpointSetHealthy with the poll result after each tick.
+func TestCollectorReportsEndpointHealth(t *testing.T) {
+	t.Run("healthy on successful collection", func(t *testing.T) {
+		pool := &FakePoolInfo{}
+		source := &datasourcemocks.MetricsDataSource{}
+		c := NewCollector(pool)
+		ticker := mocks.NewTicker()
+
+		require.NoError(t, c.Start(context.Background(), ticker, endpoint, []fwkdl.PollingDataSource{source}, nil))
+		ticker.Tick()
+
+		require.Eventually(t, func() bool {
+			return atomic.LoadInt64(&pool.healthyCalls) >= 1
+		}, 1*time.Second, 2*time.Millisecond, "expected EndpointSetHealthy(true) to be called")
+
+		assert.Equal(t, int64(0), atomic.LoadInt64(&pool.unhealthyCalls))
+		require.NoError(t, c.Stop())
+	})
+
+	t.Run("unhealthy on failed collection", func(t *testing.T) {
+		pool := &FakePoolInfo{}
+		source := &datasourcemocks.MetricsDataSource{}
+		source.SetErrors(map[types.NamespacedName]error{
+			endpoint.GetMetadata().NamespacedName: assert.AnError,
+		})
+		c := NewCollector(pool)
+		ticker := mocks.NewTicker()
+
+		require.NoError(t, c.Start(context.Background(), ticker, endpoint, []fwkdl.PollingDataSource{source}, nil))
+		ticker.Tick()
+
+		require.Eventually(t, func() bool {
+			return atomic.LoadInt64(&pool.unhealthyCalls) >= 1
+		}, 1*time.Second, 2*time.Millisecond, "expected EndpointSetHealthy(false) to be called")
+
+		assert.Equal(t, int64(0), atomic.LoadInt64(&pool.healthyCalls))
+		require.NoError(t, c.Stop())
+	})
+}
+
 func TestCollectorLogsFirstPollError(t *testing.T) {
 	pollErr := errors.New("metric family not found")
 	src := &errSource{err: pollErr}
-	c := NewCollector()
+	c := NewCollector(nil)
 	ticker := mocks.NewTicker()
 	ctx := context.Background()
 
@@ -207,7 +267,7 @@ func TestCollectorLogsFirstPollError(t *testing.T) {
 func TestCollectorLogsRecoveryAfterError(t *testing.T) {
 	pollErr := errors.New("transient error")
 	src := &errSource{err: pollErr}
-	c := NewCollector()
+	c := NewCollector(nil)
 	ticker := mocks.NewTicker()
 	ctx := context.Background()
 

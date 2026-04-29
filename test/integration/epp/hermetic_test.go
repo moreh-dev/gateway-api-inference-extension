@@ -351,17 +351,17 @@ featureGates:
 					name: "response streaming: SSE token counting",
 					requests: ReqResponseOnly(
 						map[string]string{"content-type": "text/event-stream", "status": "200"},
-						// Chunk 1: Simulate a standard data chunk.
-						`data: {}`,
-						// Chunk 2: Usage data + DONE signal.
-						`data: {"usage":{"prompt_tokens":7,"total_tokens":17,"completion_tokens":10}}`+"\n"+`data: [DONE]`,
+						// Chunk 1: Simulate a standard data chunk with trailing newline (SSE line delimiter).
+						"data: {}\n",
+						// Chunk 2: Usage data + DONE signal with trailing newlines.
+						`data: {"usage":{"prompt_tokens":7,"total_tokens":17,"completion_tokens":10}}`+"\n"+`data: [DONE]`+"\n",
 						"", // EndOfStream
 					),
 					pods:         []podState{P(0, 4, 0.2, modelSheddableTarget)},
 					waitForModel: modelSheddable,
 					wantResponses: ExpectStreamResp(
-						`data: {}`,
-						`data: {"usage":{"prompt_tokens":7,"total_tokens":17,"completion_tokens":10}}`+"\n"+`data: [DONE]`,
+						"data: {}\n",
+						`data: {"usage":{"prompt_tokens":7,"total_tokens":17,"completion_tokens":10}}`+"\n"+`data: [DONE]`+"\n",
 						"",
 					),
 					// Labels are empty because we skipped the Request phase.
@@ -391,6 +391,91 @@ featureGates:
               inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="+Inf"} 1
               inference_objective_input_tokens_sum{model_name="",target_model_name=""} 7
               inference_objective_input_tokens_count{model_name="",target_model_name=""} 1
+              `),
+						"inference_objective_output_tokens": cleanMetric(`
+              # HELP inference_objective_output_tokens [ALPHA] Inference objective output token count distribution for requests in each model.
+              # TYPE inference_objective_output_tokens histogram
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="1"} 0
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="8"} 0
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="16"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="32"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="64"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="128"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="256"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="512"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="1024"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="2048"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="4096"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="8192"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="+Inf"} 1
+              inference_objective_output_tokens_sum{model_name="",target_model_name=""} 10
+              inference_objective_output_tokens_count{model_name="",target_model_name=""} 1
+              `),
+					},
+				},
+				{
+					name: "response streaming: Responses API token counting",
+					requests: ReqResponseOnly(
+						map[string]string{"content-type": "text/event-stream", "status": "200"},
+						// Chunk 1: Token delta event.
+						"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n",
+						// Chunk 2: Completed event with usage.
+						"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"object\":\"response\",\"usage\":{\"input_tokens\":10,\"output_tokens\":20,\"total_tokens\":30}}}\n",
+						"", // EndOfStream
+					),
+					pods:         []podState{P(0, 4, 0.2, modelSheddableTarget)},
+					waitForModel: modelSheddable,
+					wantResponses: ExpectStreamResp(
+						"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n",
+						"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"object\":\"response\",\"usage\":{\"input_tokens\":10,\"output_tokens\":20,\"total_tokens\":30}}}\n",
+						"",
+					),
+					// Labels are empty because we skipped the Request phase.
+					wantMetrics: map[string]string{
+						"inference_objective_input_tokens": cleanMetric(`
+              # HELP inference_objective_input_tokens [ALPHA] Inference objective input token count distribution for requests in each model.
+              # TYPE inference_objective_input_tokens histogram
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="1"} 0
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="8"} 0
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="16"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="32"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="64"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="128"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="256"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="512"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="1024"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="2048"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="4096"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="8192"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="16384"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="32778"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="65536"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="131072"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="262144"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="524288"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="1.048576e+06"} 1
+              inference_objective_input_tokens_bucket{model_name="",target_model_name="",le="+Inf"} 1
+              inference_objective_input_tokens_sum{model_name="",target_model_name=""} 10
+              inference_objective_input_tokens_count{model_name="",target_model_name=""} 1
+              `),
+						"inference_objective_output_tokens": cleanMetric(`
+              # HELP inference_objective_output_tokens [ALPHA] Inference objective output token count distribution for requests in each model.
+              # TYPE inference_objective_output_tokens histogram
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="1"} 0
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="8"} 0
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="16"} 0
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="32"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="64"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="128"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="256"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="512"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="1024"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="2048"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="4096"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="8192"} 1
+              inference_objective_output_tokens_bucket{model_name="",target_model_name="",le="+Inf"} 1
+              inference_objective_output_tokens_sum{model_name="",target_model_name=""} 20
+              inference_objective_output_tokens_count{model_name="",target_model_name=""} 1
               `),
 					},
 				},

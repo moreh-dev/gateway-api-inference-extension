@@ -292,6 +292,11 @@ type ResponsesRequest struct {
 	Instructions any `json:"instructions,omitempty"`
 	// Tools field for function calling capabilities
 	Tools any `json:"tools,omitempty"`
+	// Store indicates whether the response should be stored for multi-turn chaining.
+	// Parsed from the original request; plugins should read this instead of RawBody["store"].
+	// NOTE(MAF-19473): Moreh-local field. Upstream's ResponsesRequest does not have Store.
+	// Kept here so the downstream ResponsesStorePlugin can read body.Responses.Store directly.
+	Store *bool `json:"store,omitempty"`
 	// CacheSalt isolates prefix caches for security
 	CacheSalt string `json:"cache_salt,omitempty"`
 }
@@ -360,11 +365,12 @@ type Content struct {
 }
 
 type ContentBlock struct {
-	Type       string     `json:"type"`
-	Text       string     `json:"text,omitempty"`
-	ImageURL   ImageBlock `json:"image_url"`
-	InputAudio AudioBlock `json:"input_audio"`
-	VideoURL   VideoBlock `json:"video_url"`
+	Type       string        `json:"type"`
+	Text       string        `json:"text,omitempty"`
+	ImageURL   ImageBlock    `json:"image_url"`
+	InputAudio AudioBlock    `json:"input_audio"`
+	AudioURL   AudioURLBlock `json:"audio_url"`
+	VideoURL   VideoBlock    `json:"video_url"`
 }
 
 type ImageBlock struct {
@@ -374,6 +380,10 @@ type ImageBlock struct {
 type AudioBlock struct {
 	Data   string `json:"data,omitempty"`
 	Format string `json:"format,omitempty"`
+}
+
+type AudioURLBlock struct {
+	Url string `json:"url,omitempty"`
 }
 
 type VideoBlock struct {
